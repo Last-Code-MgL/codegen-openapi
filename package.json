@@ -1,0 +1,23 @@
+{
+  "name": "kubb-plugin-nextjs-routes",
+  "version": "1.0.0",
+  "description": "Kubb plugin to generate Next.js API routes and frontend services from OpenAPI specs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "@kubb/core": "^4.35.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "tsup": "^8.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
