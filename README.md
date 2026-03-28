@@ -1,72 +1,264 @@
-# nextjs-openapi-codegen 🚀
+# nextjs-openapi-codegen
 
-A lightning-fast, zero-dependency standalone CLI tool to automatically generate complete **Next.js API Route Handlers** and fully typed **Frontend Services** directly from any OpenAPI / Swagger specification.
+A lightning-fast, zero-dependency CLI tool that generates complete **Next.js API Route Handlers** and fully typed **Frontend Services** directly from any OpenAPI / Swagger specification.
 
-Stop writing boilerplate code for your Next.js backends. Connect your APIs seamlessly without the hassle of unmaintainable generators.
-
----
-
-## ✨ Features
-
-- **No Kubb or big frameworks needed:** 100% standalone CLI powered by raw Node.js.
-- **Next.js 13+ App Router natively supported:** Generates modern `route.ts` API endpoints using the `context.params` Promise paradigm.
-- **End-to-End TypeScript Validation:** Generates shared schemas and response types from your OpenAPI.
-- **Out-of-the-Box Authentication:** Automatically parses specific cookies (e.g. JWT) and passes them between client, server route handler, and your actual backend API via a pass-through Authorization proxy.
-- **Device Tracking built-in:** Optionally inject client headers automatically (`x-device-id`, `x-device-os`, etc.) for security tracking.
+Stop writing boilerplate. Connect your APIs in seconds.
 
 ---
 
-## 📦 Installation
+## Table of Contents
 
-To try it out or use it in an existing Next.js app, install the package locally:
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Commands](#commands)
+  - [run](#run--interactive-setup)
+  - [generate](#generate)
+  - [diff](#diff)
+  - [init](#init)
+- [Configuration](#configuration)
+- [What Gets Generated](#what-gets-generated)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Features
+
+- **Zero dependencies** — powered by raw Node.js, no bloated toolchains
+- **Next.js 13+ App Router** — generates modern `route.ts` handlers using the async `context.params` pattern
+- **End-to-end TypeScript** — shared types derived directly from your OpenAPI schemas
+- **Authentication built-in** — automatic JWT cookie propagation between client, route handler, and backend
+- **Interactive setup** — `nextjs-codegen run` guides you through configuration step by step
+- **Diff before you generate** — `nextjs-codegen diff` shows exactly what changed before writing any files
+- **Config validation** — clear, actionable errors before any file is touched
+
+---
+
+## Installation
 
 ```bash
+# As a dev dependency (recommended)
 npm install --save-dev nextjs-openapi-codegen
+
+# Or run without installing
+npx nextjs-openapi-codegen run
 ```
 
-## 🛠 Usage
+---
 
-**1. Initialize the config file**
+## Quick Start
 
-Run the initialization command at the root of your project:
+The fastest way to get started:
+
+```bash
+npx nextjs-codegen run
+```
+
+This launches an interactive setup that asks a few questions and gets you generating in under a minute. See [run](#run--interactive-setup) for details.
+
+---
+
+## Commands
+
+### `run` — Interactive Setup
+
+```bash
+npx nextjs-codegen run
+```
+
+The recommended entry point for new projects. Guides you through the full setup interactively:
+
+1. Asks for your OpenAPI spec URL or file path
+2. Configures output directories, env variables, and auth cookie
+3. Writes `nextjs-codegen.config.mjs` to your project root
+4. Optionally runs `generate` immediately
+
+No flags needed. Everything is explained inline with examples.
+
+---
+
+### `generate`
+
+```bash
+npx nextjs-codegen generate
+npx nextjs-codegen generate --config ./configs/my-api.mjs
+```
+
+Reads your config file and generates all output files:
+
+1. `apiClient.ts` — pre-configured Axios instance for the browser (JWT cookie, 401 redirect)
+2. `fetchBackend.ts` — server-side HTTP helper for route handlers (forwards JWT via `next/headers`)
+3. Route handlers — one `route.ts` per OpenAPI path, acting as typed HTTP proxies
+4. Services — typed method wrappers grouped by OpenAPI tag
+
+Config is validated before any file is written. Errors are reported with clear messages pointing to the exact field.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--config <path>` | Path to config file | `nextjs-codegen.config.mjs` |
+
+---
+
+### `diff`
+
+```bash
+npx nextjs-codegen diff
+npx nextjs-codegen diff --config ./configs/my-api.mjs
+```
+
+Fetches the latest spec and compares what would be generated against what already exists on disk — **without writing any files**.
+
+Use this before running `generate` to understand what changed in your API:
+
+```
+[my-api]
+  → fetching spec: https://api.example.com/api-json
+  + 2 new route(s) not yet generated:
+    + src/app/api/payments/[id]/route.ts
+    + src/app/api/webhooks/route.ts
+  - 1 route file(s) no longer in spec:
+    - src/app/api/legacy/users/route.ts
+    5 route(s) unchanged
+  ✓ Services up to date — 4 service(s)
+
+Run npx nextjs-codegen generate to apply changes.
+```
+
+---
+
+### `init`
+
 ```bash
 npx nextjs-codegen init
+npx nextjs-codegen init --config ./configs/my-api.mjs
 ```
-This automatically scaffolds a minimal \`nextjs-codegen.config.mjs\` at the root of your app.
 
-**2. Configure your API**
+Writes a starter `nextjs-codegen.config.mjs` to your project root with all options documented inline. Skips silently if the file already exists.
 
-Edit the generated \`nextjs-codegen.config.mjs\`:
-```javascript
-// nextjs-codegen.config.mjs
+> Prefer `run` for first-time setup — it asks questions and fills in the values for you.
+
+---
+
+## Configuration
+
+Full reference for `nextjs-codegen.config.mjs`:
+
+```js
+/** @type {import('nextjs-openapi-codegen').CodegenConfig[]} */
 export default [
   {
-    name: 'my-api',
-    spec: 'https://api.example.com/api-json', // Your OpenAPI Spec JSON endpoint
-    routesOut: 'src/app/api',                 // Output for Next.js API Routes
-    servicesOut: 'src/services',              // Output for typed services
-    apiEnvVar: 'CORE_API_URL',                // Process ENv var used dynamically
-    apiFallback: 'https://api.example.com',
-    stripPathPrefix: '/api',
-    cookieName: 'accessToken',                // Global Auth cookie (optional)
+    // ── Identity ──────────────────────────────────────────────────────────────
+    name: 'my-api',                           // Label shown in CLI output
+
+    // ── Spec ─────────────────────────────────────────────────────────────────
+    spec: 'https://api.example.com/api-json', // URL or local path (.json)
+
+    // ── Output directories ────────────────────────────────────────────────────
+    routesOut:   'src/app/api',               // Where route.ts files are written
+    servicesOut: 'src/services',              // Where service files are written
+
+    // ── Backend proxy config ──────────────────────────────────────────────────
+    apiEnvVar:        'API_URL',              // process.env key for backend URL
+    apiFallback:      'https://api.example.com', // Used if env var is not set
+    stripPathPrefix:  '/api',                 // Removes this prefix from spec paths
+
+    // ── Auth ──────────────────────────────────────────────────────────────────
+    cookieName: 'accessToken',                // JWT cookie name (omit to disable auth)
+
+    // ── apiClient.ts (browser) ────────────────────────────────────────────────
+    apiClient: {
+      outputPath:          'src/lib/apiClient.ts',
+      deviceTracking:      false,   // Injects x-device-id, x-device-os headers
+      unauthorizedRedirect: '/auth', // Redirect on 401
+    },
+
+    // Set apiClient: false to skip generating this file
+
+    // ── fetchBackend.ts (server) ──────────────────────────────────────────────
+    fetchBackend: {
+      outputPath: 'src/lib/fetchBackend.ts',
+      timeout:    15000,            // Request timeout in ms
+    },
+
+    // Set fetchBackend: false to skip generating this file
   },
 ];
 ```
 
-**3. Generate your entire backend bridge & clients!**
+### Multiple APIs
 
-```bash
-npx nextjs-codegen generate
+Pass multiple config objects to manage several APIs in one project:
+
+```js
+export default [
+  { name: 'core',     spec: 'https://api.example.com/api-json',     ... },
+  { name: 'payments', spec: 'https://payments.example.com/api-json', ... },
+];
 ```
 
-## ⚙️ How it works under the hood
-
-When running `generate`, the CLI performs the following tasks:
-1. **apiClient.ts**: Generates a pre-configured Axios instance for the browser with automatic Cookie & Error interceptors.
-2. **fetchBackend.ts**: Generates a server-side helper to be used in Route Handlers. Automatically forwards the JWT token via `next/headers.cookies()`.
-3. **Route Handlers (`src/app/api/.../route.ts`)**: Iterates through every path in the OpenAPI spec and creates lightweight HTTP Proxies. Properly handles dynamic parameters (`[id]`), query strings, JSON payloads, and `multipart/form-data`.
-4. **Typed Services (`src/services/.../index.ts`)**: Groups your API calls by tag into modular services natively bound to the generated TypeScript interfaces.
+Each entry generates its own routes and services independently.
 
 ---
 
-> Built with Node.js logic and designed for performance! No bloated ASTs.
+## What Gets Generated
+
+### Route Handlers (`routesOut/`)
+
+One `route.ts` file per OpenAPI path. Each file exports HTTP method handlers (`GET`, `POST`, etc.) that act as typed proxies to your backend:
+
+- Forwards path params, query strings, JSON bodies, and `multipart/form-data`
+- Reads `Authorization` header and propagates it downstream
+- Returns structured JSON errors on failure
+
+```
+src/app/api/
+  users/
+    route.ts          ← GET /users, POST /users
+    [id]/
+      route.ts        ← GET /users/{id}, PUT /users/{id}, DELETE /users/{id}
+```
+
+### Services (`servicesOut/`)
+
+One directory per OpenAPI tag, each exporting typed async functions bound to the generated TypeScript interfaces:
+
+```
+src/services/
+  users/
+    index.ts          ← getUsers(), createUser(), getUserById(), ...
+    types.ts          ← User, CreateUserDto, GetUsersResponse, ...
+  payments/
+    index.ts
+    types.ts
+```
+
+### `apiClient.ts`
+
+Pre-configured Axios instance for use in browser/client components:
+
+- Reads JWT from cookies and sends as `Authorization: Bearer <token>`
+- Automatically redirects to `/auth` (configurable) on 401
+- Optional device fingerprint headers
+
+### `fetchBackend.ts`
+
+Server-side HTTP helper for use inside route handlers:
+
+- Reads JWT from `next/headers` cookies (server-only)
+- Propagates token to backend requests
+- Configurable timeout (default 15s)
+
+---
+
+## Contributing
+
+Bug reports and feature requests are welcome. Open an issue or pull request on GitHub.
+
+---
+
+## License
+
+MIT

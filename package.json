@@ -10,11 +10,22 @@
   },
   "files": [
     "dist",
-    "bin"
+    "bin",
+    "README.md"
   ],
   "scripts": {
     "build": "tsup",
-    "dev": "tsup --watch"
+    "dev": "tsup --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "author": "Miguel thelastcodee@gmail.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Last-Code-MgL/nextjs-openapi-codegen.git"
+  },
+  "homepage": "https://github.com/Last-Code-MgL/nextjs-openapi-codegen#readme",
+  "bugs": {
+    "url": "https://github.com/Last-Code-MgL/nextjs-openapi-codegen/issues"
   },
   "dependencies": {},
   "devDependencies": {
