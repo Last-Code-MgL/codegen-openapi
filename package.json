@@ -1,6 +1,6 @@
 {
   "name": "nextjs-openapi-codegen",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "CLI to generate Next.js API route handlers, typed frontend services, apiClient and fetchBackend from any OpenAPI/Swagger spec",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
