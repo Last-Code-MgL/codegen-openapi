@@ -19,6 +19,7 @@ Stop writing boilerplate. Connect your APIs in seconds.
 - [Quick Start](#quick-start)
 - [Commands](#commands)
   - [run](#run)
+  - [add](#add)
   - [generate](#generate)
   - [diff](#diff)
   - [init](#init)
@@ -106,9 +107,17 @@ The codegen itself has zero dependencies — it only *generates* code that uses 
 npx openapi-gen run
 ```
 
-It asks 7 questions, writes your config, and optionally generates everything right away.
+Guides you through 7 questions, saves your config, generates everything, and asks if you want to connect a second API right away.
 
-**Already have a config:**
+**Connect a second (or third) API to the same project:**
+
+```bash
+npx openapi-gen add
+```
+
+Asks only name + spec URL — inherits auth, framework and shared settings from your existing config.
+
+**Re-generate after your backend changes:**
 
 ```bash
 npx openapi-gen generate
@@ -118,6 +127,15 @@ npx openapi-gen generate
 
 ```bash
 npx openapi-gen diff
+```
+
+**Typical multi-service setup:**
+
+```bash
+npx openapi-gen run   # → configure core API (main backend)
+npx openapi-gen add   # → add payments service
+npx openapi-gen add   # → add notifications service
+npx openapi-gen generate   # → generates all 3 at once
 ```
 
 ---
@@ -137,11 +155,21 @@ npx openapi-gen run --config ./configs/my-api.mjs
 
 1. **Framework** — `nextjs` or `react`
 2. **API name** — label for CLI output
-3. **OpenAPI spec** — URL or local file path *(required)*
+3. **OpenAPI spec** — URL or local file path of your first API *(required)*
 4. **Path prefix to strip** — prevents double-nesting like `/api/api/users`
 5. **Backend URL** — env variable name and fallback *(Next.js only)*
 6. **JWT cookie name** — leave blank to skip auth entirely
 7. **Generate now?** — run `generate` immediately after saving
+
+After saving (and optionally generating), the wizard asks:
+
+```
+Do you have another API to connect?
+Example: a payments service, a notifications API, a separate microservice...
+Add another API to this config? (y/N):
+```
+
+Say **y** to chain directly into `openapi-gen add` for the next API. Repeat as many times as needed.
 
 If a config file already exists, it asks whether to overwrite it before proceeding.
 
@@ -150,6 +178,76 @@ If a config file already exists, it asks whether to overwrite it before proceedi
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--config <path>` | Where to write the config file | `openapi-gen.config.mjs` |
+
+---
+
+### `add`
+
+```bash
+npx openapi-gen add
+npx openapi-gen add --config ./configs/my-api.mjs
+```
+
+Appends a new API entry to an existing config file. This is the fastest way to connect a second (or third) backend service — it inherits your existing framework, auth, and shared settings so you only answer what's different.
+
+**What it asks (6 steps for Next.js, 5 for React):**
+
+1. **API name** — label and default folder name for this API
+2. **OpenAPI spec** — URL or local file path for the new service
+3. **Authentication** — keep the same JWT cookie, use a different one, or disable auth for this API
+4. **Output directories** — routes, services (and hooks if React) with smart defaults
+5. **Backend URL** *(Next.js only)* — env variable and fallback for this service
+6. **Generate now?** — re-run `generate` for all APIs immediately
+
+**What is inherited automatically** (no questions asked):
+
+| Field | Inherited from |
+|-------|---------------|
+| `framework` | first entry |
+| `cookieName` | first entry (overridable in step 3) |
+| `stripPathPrefix` | first entry |
+| `apiClient` | set to `false` — already generated |
+| `fetchBackend` | set to `false` — already generated |
+
+**Example session:**
+
+```
+openapi-gen add
+
+  Adding to openapi-gen.config.mjs (1 API configured)
+  Inheriting: framework=nextjs, cookieName=accessToken, stripPathPrefix=/api
+
+  Step 1 — API name
+  Name (e.g. payments):  payments
+
+  Step 2 — OpenAPI spec
+  Spec URL or path (required):  https://payments.example.com/api-json
+
+  Step 3 — Authentication
+  Base API uses cookieName='accessToken'
+  Enter to keep the same  |  type a new name to override  |  - to disable auth
+  Cookie name (accessToken):
+
+  Step 4 — Output directories
+  Routes output    (src/app/api):
+  Services output  (src/services/payments):
+
+  Step 5 — Backend URL
+  Env variable     (PAYMENTS_API_URL):
+  Fallback URL     (leave blank):
+
+  Step 6 — Generate now? (Y/n):  y
+
+  ✓ Config updated — 2 APIs configured
+```
+
+> Run `openapi-gen add` as many times as needed. Each new entry is appended to the array and `openapi-gen generate` processes all of them in one shot.
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--config <path>` | Path to config file | `openapi-gen.config.mjs` |
 
 ---
 
@@ -267,7 +365,7 @@ Writes a blank starter `openapi-gen.config.mjs` with all fields documented inlin
 Your config file (`openapi-gen.config.mjs`) exports an array of config objects:
 
 ```js
-/** @type {import('nextjs-openapi-codegen').CodegenConfig[]} */
+/** @type {import('codegen-openapi').CodegenConfig[]} */
 export default [
   {
     name:            'my-api',
@@ -563,7 +661,7 @@ fetchBackend: false
 Pass multiple objects in the array to manage several APIs in one project. Each entry runs independently:
 
 ```js
-/** @type {import('nextjs-openapi-codegen').CodegenConfig[]} */
+/** @type {import('codegen-openapi').CodegenConfig[]} */
 export default [
   {
     name:        'core',

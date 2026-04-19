@@ -217,8 +217,13 @@ ${line}
   console.log(`  ${c.bold}Step 1 of 7${c.reset} — ${c.bold}Framework${c.reset}`);
   console.log(`  ${dim('nextjs: generates routes + services (Next.js App Router)')}`);
   console.log(`  ${dim('react:  generates services + React Query hooks only')}`);
-  const frameworkRaw = (await ask(`  Framework ${dim('(nextjs)')}:  `)).trim().toLowerCase();
-  const framework = frameworkRaw === 'react' ? 'react' : 'nextjs';
+  let framework = '';
+  while (!framework) {
+    const raw = (await ask(`  Framework ${dim('(nextjs / react)')}:  `)).trim().toLowerCase();
+    if (raw === '' || raw === 'nextjs') framework = 'nextjs';
+    else if (raw === 'react')           framework = 'react';
+    else console.log(`  ${err(`'${raw}' is not valid. Choose: nextjs or react`)}`);
+  }
   const isReact = framework === 'react';
 
   // ── Step 2: API name ────────────────────────────────────────────────────────
@@ -231,6 +236,7 @@ ${line}
   console.log(`  ${dim('The URL or local path to your OpenAPI JSON spec.')}`);
   console.log(`  ${dim('Examples: https://api.example.com/api-json')}`);
   console.log(`  ${dim('          ./openapi.json')}`);
+  console.log(`  ${dim('This configures your first API. You can add more at the end of this wizard.')}`);
   let spec = '';
   while (!spec) {
     spec = (await ask(`  Spec URL or path ${c.red}(required)${c.reset}:  `)).trim();
@@ -359,15 +365,30 @@ ${authLine}
   console.log(`  ${ok(`Config saved: ${configPath}`)}`);
   console.log(line);
 
-  if (!shouldGenerate) {
+  if (shouldGenerate) {
+    console.log('');
+    await runGenerate(configPath);
+  } else {
     console.log(`\n  Run ${c.cyan}npx openapi-gen generate${c.reset} whenever you're ready.`);
-    console.log(`  To add more APIs:        ${c.cyan}npx openapi-gen add${c.reset}\n`);
-    return;
   }
 
-  console.log('');
-  await runGenerate(configPath);
-  console.log(`  Tip: add more APIs anytime with ${c.cyan}npx openapi-gen add${c.reset}\n`);
+  // Ask if the user wants to chain another API right now
+  const { createInterface: createInterface2 } = await import('readline');
+  const rl2 = createInterface2({ input: process.stdin, output: process.stdout });
+  const ask2 = (q) => new Promise((res) => rl2.question(q, res));
+
+  console.log(`\n${line}`);
+  console.log(`  ${c.bold}Do you have another API to connect?${c.reset}`);
+  console.log(`  ${dim('Example: a payments service, a notifications API, a separate microservice...')}`);
+  const addAnother = (await ask2(`  Add another API to this config? ${dim('(y/N)')}:  `)).trim().toLowerCase();
+  rl2.close();
+
+  if (addAnother === 'y') {
+    console.log('');
+    await runAdd(configPath);
+  } else {
+    console.log(`\n  To add more APIs later: ${c.cyan}npx openapi-gen add${c.reset}\n`);
+  }
 }
 
 // ─── Config serialization helpers ────────────────────────────────────────────

@@ -5,7 +5,8 @@
       "Bash(node -e \"const g = require\\('./dist/index.cjs'\\); console.log\\(typeof g.generateHooks, typeof g.generateRoutes, typeof g.generateServices\\);\")",
       "Bash(node -e ' *)",
       "Bash(node c:/projects/nextjs-openapi-codegen/bin/cli.mjs --help)",
-      "Bash(node c:/projects/nextjs-openapi-codegen/bin/cli.mjs add --config /tmp/nonexistent.mjs)"
+      "Bash(node c:/projects/nextjs-openapi-codegen/bin/cli.mjs add --config /tmp/nonexistent.mjs)",
+      "Bash(npm run *)"
     ]
   }
 }
