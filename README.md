@@ -1,11 +1,13 @@
-# nextjs-openapi-codegen
+# codegen-openapi
 
-A lightning-fast, zero-dependency CLI that generates complete **Next.js App Router API Route Handlers** and fully typed **Frontend Services** directly from any OpenAPI / Swagger specification.
+A lightning-fast, zero-dependency CLI that generates **Next.js App Router API Route Handlers**, fully typed **Frontend Services**, and **React Query hooks** directly from any OpenAPI / Swagger specification.
+
+Works with **Next.js** (App Router) and standalone **React** projects.
 
 Stop writing boilerplate. Connect your APIs in seconds.
 
-[![npm version](https://img.shields.io/npm/v/nextjs-openapi-codegen)](https://www.npmjs.com/package/nextjs-openapi-codegen)
-[![license](https://img.shields.io/npm/l/nextjs-openapi-codegen)](./LICENSE)
+[![npm version](https://img.shields.io/npm/v/codegen-openapi)](https://www.npmjs.com/package/codegen-openapi)
+[![license](https://img.shields.io/npm/l/codegen-openapi)](./LICENSE)
 [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](./package.json)
 
 ---
@@ -21,10 +23,12 @@ Stop writing boilerplate. Connect your APIs in seconds.
   - [diff](#diff)
   - [init](#init)
 - [Configuration Reference](#configuration-reference)
+  - [framework](#framework)
   - [name](#name)
   - [spec](#spec)
   - [routesOut](#routesout)
   - [servicesOut](#servicesout)
+  - [hooksOut](#hooksout)
   - [apiEnvVar](#apienvvar)
   - [apiFallback](#apifallback)
   - [stripPathPrefix](#strippathprefix)
@@ -34,8 +38,9 @@ Stop writing boilerplate. Connect your APIs in seconds.
   - [fetchBackend](#fetchbackend)
   - [Multiple APIs](#multiple-apis)
 - [What Gets Generated](#what-gets-generated)
-  - [Route Handlers](#route-handlers)
+  - [Next.js: Route Handlers](#nextjs-route-handlers)
   - [Typed Services](#typed-services)
+  - [React Query Hooks](#react-query-hooks)
   - [apiClient.ts](#apiclientts)
   - [fetchBackend.ts](#fetchbackendts)
 - [Contributing](#contributing)
@@ -47,10 +52,11 @@ Stop writing boilerplate. Connect your APIs in seconds.
 
 - **Zero dependencies** — powered by raw Node.js builtins, no bloated toolchains
 - **Next.js 13+ App Router native** — generates modern `route.ts` handlers with async `context.params` (Next.js 15+ ready)
+- **React support** — generates typed services and React Query hooks for standalone React projects
 - **End-to-end TypeScript** — types derived directly from your OpenAPI schemas, including `allOf`, `oneOf`, `anyOf`, and nullable support
-- **Authentication built-in** — automatic JWT cookie propagation between browser, route handler, and backend API
-- **Interactive setup** — `nextjs-codegen run` guides you through the full configuration in under a minute
-- **Diff before you generate** — `nextjs-codegen diff` shows exactly what changed in your spec before writing any files
+- **Authentication built-in** — automatic JWT cookie propagation between browser, route handler, and backend API (optional)
+- **Interactive setup** — `openapi-gen run` guides you through the full configuration in under a minute
+- **Diff before you generate** — `openapi-gen diff` shows exactly what changed in your spec before writing any files
 - **Config validation** — clear, actionable errors pointing to the exact field before any file is touched
 - **Multiple APIs** — configure several OpenAPI specs in a single config file, each generating independently
 
@@ -58,7 +64,7 @@ Stop writing boilerplate. Connect your APIs in seconds.
 
 ## Installation
 
-Install as a dev dependency in your Next.js project:
+Install as a dev dependency in your project:
 
 ```bash
 # npm
@@ -80,6 +86,16 @@ Or run directly without installing:
 npx nextjs-openapi-codegen run
 ```
 
+### React projects — peer dependency
+
+If you use `framework: 'react'`, the generated hooks require `@tanstack/react-query` in your project:
+
+```bash
+npm install @tanstack/react-query
+```
+
+The codegen itself has zero dependencies — it only *generates* code that uses React Query. Your app still needs it installed.
+
 ---
 
 ## Quick Start
@@ -87,21 +103,21 @@ npx nextjs-openapi-codegen run
 **New project — use the interactive wizard:**
 
 ```bash
-npx nextjs-codegen run
+npx openapi-gen run
 ```
 
-It asks 6 questions, writes your config, and optionally generates everything right away.
+It asks 7 questions, writes your config, and optionally generates everything right away.
 
 **Already have a config:**
 
 ```bash
-npx nextjs-codegen generate
+npx openapi-gen generate
 ```
 
 **Check what changed in your spec before re-generating:**
 
 ```bash
-npx nextjs-codegen diff
+npx openapi-gen diff
 ```
 
 ---
@@ -111,20 +127,21 @@ npx nextjs-codegen diff
 ### `run`
 
 ```bash
-npx nextjs-codegen run
-npx nextjs-codegen run --config ./configs/my-api.mjs
+npx openapi-gen run
+npx openapi-gen run --config ./configs/my-api.mjs
 ```
 
 **Recommended for first-time setup.** Launches an interactive wizard that guides you through every configuration option step by step. No need to read docs first — everything is explained inline with examples.
 
-**What it does:**
+**What it asks:**
 
-1. Asks for an API name (label for CLI output)
-2. Asks for your OpenAPI spec URL or local file path *(required)*
-3. Asks for the path prefix to strip from spec routes
-4. Asks for the backend URL env variable name and fallback URL
-5. Asks for the JWT cookie name (or skips auth if left blank)
-6. Asks whether to run `generate` immediately after saving
+1. **Framework** — `nextjs` or `react`
+2. **API name** — label for CLI output
+3. **OpenAPI spec** — URL or local file path *(required)*
+4. **Path prefix to strip** — prevents double-nesting like `/api/api/users`
+5. **Backend URL** — env variable name and fallback *(Next.js only)*
+6. **JWT cookie name** — leave blank to skip auth entirely
+7. **Generate now?** — run `generate` immediately after saving
 
 If a config file already exists, it asks whether to overwrite it before proceeding.
 
@@ -132,38 +149,48 @@ If a config file already exists, it asks whether to overwrite it before proceedi
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--config <path>` | Where to write the config file | `nextjs-codegen.config.mjs` |
+| `--config <path>` | Where to write the config file | `openapi-gen.config.mjs` |
 
 ---
 
 ### `generate`
 
 ```bash
-npx nextjs-codegen generate
-npx nextjs-codegen generate --config ./configs/my-api.mjs
+npx openapi-gen generate
+npx openapi-gen generate --config ./configs/my-api.mjs
 ```
 
-Reads your config and generates all output files. For each config entry, in order:
+Reads your config and generates all output files. The exact steps depend on `framework`:
 
-1. Validates the config — stops with clear errors if anything is wrong, before touching any file
+**Next.js (`framework: 'nextjs'`):**
+
+1. Validates config — stops with clear errors before touching any file
 2. Generates `apiClient.ts` (unless `apiClient: false`)
 3. Generates `fetchBackend.ts` (unless `fetchBackend: false`)
-4. Fetches the OpenAPI spec (URL or local file)
+4. Fetches the OpenAPI spec
 5. Generates one `route.ts` per API path
 6. Generates one service directory per OpenAPI tag
+
+**React (`framework: 'react'`):**
+
+1. Validates config
+2. Generates `apiClient.ts` (unless `apiClient: false`)
+3. Fetches the OpenAPI spec
+4. Generates one service directory per OpenAPI tag
+5. Generates one hooks file per OpenAPI tag (`hooksOut/{slug}/index.ts`)
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--config <path>` | Path to config file | `nextjs-codegen.config.mjs` |
+| `--config <path>` | Path to config file | `openapi-gen.config.mjs` |
 
 **In `package.json` scripts:**
 
 ```json
 {
   "scripts": {
-    "codegen": "nextjs-codegen generate"
+    "codegen": "openapi-gen generate"
   }
 }
 ```
@@ -173,18 +200,19 @@ Reads your config and generates all output files. For each config entry, in orde
 ### `diff`
 
 ```bash
-npx nextjs-codegen diff
-npx nextjs-codegen diff --config ./configs/my-api.mjs
+npx openapi-gen diff
+npx openapi-gen diff --config ./configs/my-api.mjs
 ```
 
 Fetches the latest spec and compares what *would* be generated against what already exists on disk — **without writing any files**.
 
 Use this after your backend team deploys API changes to understand what needs to be re-generated:
 
+**Next.js output:**
 ```
-nextjs-codegen diff — spec vs disk
+openapi-gen diff — spec vs disk
 
-[my-api]
+[my-api] (nextjs)
   → fetching spec: https://api.example.com/api-json
   + 2 new route(s) not yet generated:
     + src/app/api/payments/[id]/route.ts
@@ -194,25 +222,35 @@ nextjs-codegen diff — spec vs disk
     5 route(s) unchanged
   ✓ Services up to date — 4 service(s)
 
-Run npx nextjs-codegen generate to apply changes.
+Run npx openapi-gen generate to apply changes.
+```
+
+**React output:**
+```
+[my-api] (react)
+  → fetching spec: https://api.example.com/api-json
+  ✓ Services up to date — 4 service(s)
+  + 1 new hook file(s) not yet generated:
+    + src/hooks/payments/index.ts
+    3 hook file(s) unchanged
 ```
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--config <path>` | Path to config file | `nextjs-codegen.config.mjs` |
+| `--config <path>` | Path to config file | `openapi-gen.config.mjs` |
 
 ---
 
 ### `init`
 
 ```bash
-npx nextjs-codegen init
-npx nextjs-codegen init --config ./configs/my-api.mjs
+npx openapi-gen init
+npx openapi-gen init --config ./configs/my-api.mjs
 ```
 
-Writes a blank starter `nextjs-codegen.config.mjs` with all fields documented inline as comments. Does nothing if the file already exists.
+Writes a blank starter `openapi-gen.config.mjs` with all fields documented inline as comments. Does nothing if the file already exists.
 
 > For first-time setup, prefer `run` — it fills in the values for you based on your answers.
 
@@ -220,19 +258,20 @@ Writes a blank starter `nextjs-codegen.config.mjs` with all fields documented in
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--config <path>` | Output path for the config file | `nextjs-codegen.config.mjs` |
+| `--config <path>` | Output path for the config file | `openapi-gen.config.mjs` |
 
 ---
 
 ## Configuration Reference
 
-Your config file (`nextjs-codegen.config.mjs`) exports an array of config objects:
+Your config file (`openapi-gen.config.mjs`) exports an array of config objects:
 
 ```js
 /** @type {import('nextjs-openapi-codegen').CodegenConfig[]} */
 export default [
   {
     name:            'my-api',
+    framework:       'nextjs',
     spec:            'https://api.example.com/api-json',
     routesOut:       'src/app/api',
     servicesOut:     'src/services',
@@ -251,6 +290,30 @@ export default [
     },
   },
 ];
+```
+
+---
+
+### `framework`
+
+| | |
+|---|---|
+| Type | `'nextjs' \| 'react'` |
+| Required | No |
+| Default | `'nextjs'` |
+
+Controls which files are generated:
+
+| | `nextjs` | `react` |
+|---|---|---|
+| `apiClient.ts` | ✅ | ✅ |
+| `fetchBackend.ts` | ✅ | — |
+| `route.ts` per path | ✅ | — |
+| Services per tag | ✅ | ✅ |
+| React Query hooks per tag | — | ✅ |
+
+```js
+framework: 'react'
 ```
 
 ---
@@ -296,6 +359,7 @@ spec: './openapi.json'                     // local file (relative to cwd)
 | Type | `string` |
 | Required | No |
 | Default | `"src/app/api"` |
+| Applies to | `nextjs` only |
 
 Directory where generated `route.ts` files are written. Created automatically if it does not exist.
 
@@ -321,6 +385,23 @@ servicesOut: 'src/services'
 
 ---
 
+### `hooksOut`
+
+| | |
+|---|---|
+| Type | `string` |
+| Required | No |
+| Default | `"src/hooks"` |
+| Applies to | `react` only |
+
+Directory where generated React Query hook files are written. Each OpenAPI tag becomes a subdirectory containing an `index.ts`. Created automatically if it does not exist.
+
+```js
+hooksOut: 'src/hooks'
+```
+
+---
+
 ### `apiEnvVar`
 
 | | |
@@ -328,6 +409,7 @@ servicesOut: 'src/services'
 | Type | `string` |
 | Required | No |
 | Default | `"API_URL"` |
+| Applies to | `nextjs` only |
 
 Name of the `process.env` variable that holds the backend base URL. Generated route handlers read this at runtime.
 
@@ -349,6 +431,7 @@ const API_URL = process.env.CORE_API_URL || '<apiFallback>';
 | Type | `string` |
 | Required | No |
 | Default | `""` |
+| Applies to | `nextjs` only |
 
 Hardcoded URL used when `apiEnvVar` is not set in the environment. Useful for local development.
 
@@ -366,7 +449,7 @@ apiFallback: 'https://api.example.com'
 | Required | No |
 | Default | `"/api"` |
 
-Removes this prefix from all OpenAPI paths before creating route files. Prevents double-nesting like `src/app/api/api/users/route.ts`.
+Removes this prefix from all OpenAPI paths before creating route files or service method URLs. Prevents double-nesting like `src/app/api/api/users/route.ts`.
 
 ```js
 stripPathPrefix: '/api'
@@ -383,7 +466,7 @@ Set to `""` (empty string) to disable stripping entirely.
 |---|---|
 | Type | `string` |
 | Required | No |
-| Default | `undefined` |
+| Default | `undefined` (auth disabled) |
 
 Name of the HTTP-only cookie that stores the JWT token.
 
@@ -394,7 +477,7 @@ Name of the HTTP-only cookie that stores the JWT token.
 cookieName: 'accessToken'
 ```
 
-Omit or set to `undefined` to disable automatic auth propagation entirely.
+Omit or leave blank in the wizard to disable automatic auth propagation entirely.
 
 ---
 
@@ -410,7 +493,6 @@ Import path that generated service files use to import the `apiClient` instance.
 
 ```js
 apiClientPath: '@/lib/apiClient'
-// → import { apiClient } from '@/lib/apiClient';
 ```
 
 ---
@@ -454,6 +536,7 @@ apiClient: false
 | Type | `false \| object` |
 | Required | No |
 | Default | `{}` (generates with defaults) |
+| Applies to | `nextjs` only |
 
 Controls generation of `fetchBackend.ts`. Set to `false` to skip this file entirely.
 
@@ -484,6 +567,7 @@ Pass multiple objects in the array to manage several APIs in one project. Each e
 export default [
   {
     name:        'core',
+    framework:   'nextjs',
     spec:        'https://api.example.com/api-json',
     routesOut:   'src/app/api',
     servicesOut: 'src/services/core',
@@ -491,12 +575,11 @@ export default [
   },
   {
     name:        'payments',
+    framework:   'react',
     spec:        'https://payments.example.com/api-json',
-    routesOut:   'src/app/api/payments',
     servicesOut: 'src/services/payments',
-    apiEnvVar:   'PAYMENTS_API_URL',
+    hooksOut:    'src/hooks/payments',
     apiClient:   false,   // already handled by the core entry
-    fetchBackend: false,
   },
 ];
 ```
@@ -505,7 +588,7 @@ export default [
 
 ## What Gets Generated
 
-### Route Handlers
+### Next.js: Route Handlers
 
 One `route.ts` file per OpenAPI path, written to `routesOut`. Each file acts as a typed HTTP proxy to your backend — handling path params, query strings, JSON bodies, and `multipart/form-data`.
 
@@ -520,6 +603,8 @@ src/app/api/
     [id]/
       route.ts
 ```
+
+Path parameters ending in `Id` (e.g. `{userId}`, `{componentId}`) are automatically normalized to `[id]` in the folder name. When multiple params in the same path would conflict (e.g. `{orgId}` and `{repoId}`), the original names are preserved.
 
 Each handler:
 - Reads `Authorization` header from the incoming request and forwards it downstream
@@ -537,8 +622,8 @@ One directory per OpenAPI tag, written to `servicesOut`. Each exports async func
 ```
 src/services/
   users/
-    index.ts        ← getUsers(), createUser(), getUserById(), updateUser(), deleteUser()
-    types.ts        ← User, CreateUserDto, UpdateUserDto, GetUsersResponse, ...
+    index.ts        ← getUsers(), createUser(), getUser(), updateUser(), deleteUser()
+    types.ts        ← User, CreateUserDto, GetUsersResponse, ...
   products/
     index.ts
     types.ts
@@ -555,9 +640,72 @@ Types are derived from your OpenAPI schemas and support:
 
 ---
 
+### React Query Hooks
+
+*Only generated when `framework: 'react'`.*
+
+One `index.ts` per OpenAPI tag, written to `hooksOut`. GET operations become `useQuery` hooks; all mutations (POST, PUT, PATCH, DELETE) become `useMutation` hooks.
+
+```
+src/hooks/
+  users/
+    index.ts        ← useListUsers(), useGetUser(), useCreateUser(), useUpdateUser(), useDeleteUser()
+  products/
+    index.ts
+```
+
+**Example generated output:**
+
+```ts
+// Auto-generated by nextjs-openapi-codegen — do not edit manually
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import usersService from '@/services/users';
+import type { ListUsersResponse, GetUserResponse, CreateUserBody } from '@/services/users/types';
+
+const tag = 'users';
+
+/** List all users */
+export function useListUsers() {
+  return useQuery<ListUsersResponse>({
+    queryKey: [tag],
+    queryFn: () => usersService.listUsers(),
+  });
+}
+
+/** Get user by id */
+export function useGetUser(id: string) {
+  return useQuery<GetUserResponse>({
+    queryKey: [tag, id],
+    queryFn: () => usersService.getUser(id),
+    enabled: !!id,
+  });
+}
+
+/** Create a new user */
+export function useCreateUser() {
+  const queryClient = useQueryClient();
+  return useMutation<CreateUserResponse, Error, { body: CreateUserBody }>({
+    mutationFn: (vars) => usersService.createUser(vars.body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [tag] });
+    },
+  });
+}
+```
+
+**Rules:**
+- GET → `useQuery`, `queryKey: [tagSlug, ...pathParams]`
+- Mutations → `useMutation`, `onSuccess` invalidates the tag's queries
+- `enabled: !!param` added automatically when path params are required
+- Hook names: `use` + `PascalCase(methodName)`
+
+> Requires `@tanstack/react-query` installed in your project.
+
+---
+
 ### `apiClient.ts`
 
-Generated at `apiClient.outputPath` (default: `src/lib/apiClient.ts`).
+Generated at `apiClient.outputPath` (default: `src/lib/apiClient.ts`). Generated for **both frameworks**.
 
 A pre-configured Axios instance for use in **browser/client components**:
 
@@ -569,7 +717,7 @@ A pre-configured Axios instance for use in **browser/client components**:
 
 ### `fetchBackend.ts`
 
-Generated at `fetchBackend.outputPath` (default: `src/lib/fetchBackend.ts`).
+Generated at `fetchBackend.outputPath` (default: `src/lib/fetchBackend.ts`). **Next.js only.**
 
 A server-side HTTP helper for use **inside route handlers** (server-only):
 
@@ -592,3 +740,5 @@ Bug reports, feature requests, and pull requests are welcome.
 ## License
 
 MIT
+#   c o d e g e n - o p e n a p i  
+ 
