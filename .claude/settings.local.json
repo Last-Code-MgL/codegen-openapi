@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"const {normalizeParamName, toNextPath} = require\\('./dist/index.cjs'\\); console.log\\(toNextPath\\('/api/users/{userId}'\\)\\); console.log\\(toNextPath\\('/api/orgs/{orgId}/repos/{repoId}'\\)\\); console.log\\(normalizeParamName\\('componentId', ['componentId']\\)\\); console.log\\(normalizeParamName\\('orgId', ['orgId', 'repoId']\\)\\);\")",
+      "Bash(node -e \"const g = require\\('./dist/index.cjs'\\); console.log\\(typeof g.generateHooks, typeof g.generateRoutes, typeof g.generateServices\\);\")"
+    ]
+  }
+}

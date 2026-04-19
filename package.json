@@ -1,12 +1,20 @@
 {
-  "name": "nextjs-openapi-codegen",
-  "version": "1.0.2",
-  "description": "CLI to generate Next.js API route handlers, typed frontend services, apiClient and fetchBackend from any OpenAPI/Swagger spec",
+  "name": "codegen-openapi",
+  "version": "1.0.0",
+  "description": "Zero-dependency CLI that generates Next.js route handlers, typed services, and React Query hooks from any OpenAPI/Swagger spec",
   "main": "dist/index.js",
+  "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
   "bin": {
-    "nextjs-codegen": "./bin/cli.mjs"
+    "openapi-gen": "./bin/cli.mjs"
   },
   "files": [
     "dist",
@@ -18,30 +26,42 @@
     "dev": "tsup --watch",
     "prepublishOnly": "npm run build"
   },
-  "author": "Miguel thelastcodee@gmail.com",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Last-Code-MgL/nextjs-openapi-codegen.git"
+  "peerDependencies": {
+    "@tanstack/react-query": ">=4.0.0"
   },
-  "homepage": "https://github.com/Last-Code-MgL/nextjs-openapi-codegen#readme",
-  "bugs": {
-    "url": "https://github.com/Last-Code-MgL/nextjs-openapi-codegen/issues"
+  "peerDependenciesMeta": {
+    "@tanstack/react-query": {
+      "optional": true
+    }
   },
   "dependencies": {},
   "devDependencies": {
-    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0",
     "tsup": "^8.0.0",
-    "@types/node": "^20.0.0"
+    "typescript": "^5.0.0"
   },
   "keywords": [
     "nextjs",
+    "react",
     "openapi",
     "swagger",
     "codegen",
     "cli",
     "routes",
     "services",
+    "hooks",
+    "react-query",
+    "tanstack",
     "typescript"
   ],
-  "license": "MIT"
+  "author": "Miguel thelastcodee@gmail.com",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Last-Code-MgL/codegen-openapi.git"
+  },
+  "homepage": "https://github.com/Last-Code-MgL/codegen-openapi#readme",
+  "bugs": {
+    "url": "https://github.com/Last-Code-MgL/codegen-openapi/issues"
+  }
 }

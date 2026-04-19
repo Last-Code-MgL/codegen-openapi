@@ -1,11 +1,27 @@
 // ─── Path helpers ─────────────────────────────────────────────────────────────
 
 /**
+ * Normalizes a path parameter name for use in Next.js dynamic route segments.
+ * Params ending in 'Id' (e.g. componentId, userId) become 'id' unless another
+ * param in the same path would produce the same normalized name (conflict).
+ */
+export function normalizeParamName(param: string, allParams: string[]): string {
+  if (/[Ii]d$/.test(param)) {
+    const others = allParams.filter(p => p !== param);
+    const othersNormalized = others.map(p => (/[Ii]d$/.test(p) ? 'id' : p));
+    if (!othersNormalized.includes('id')) return 'id';
+  }
+  return param;
+}
+
+/**
  * Transforms an OpenAPI path to a Next.js dynamic routing path.
- * e.g., /admin/users/{id} → /admin/users/[id]
+ * e.g., /admin/users/{userId} → /admin/users/[id]
+ * e.g., /orgs/{orgId}/repos/{repoId} → /orgs/[orgId]/repos/[repoId] (conflict: both kept)
  */
 export function toNextPath(openApiPath: string) {
-  return openApiPath.replace(/\{(\w+)\}/g, '[$1]');
+  const params = getPathParams(openApiPath);
+  return openApiPath.replace(/\{(\w+)\}/g, (_, p) => `[${normalizeParamName(p, params)}]`);
 }
 
 /**

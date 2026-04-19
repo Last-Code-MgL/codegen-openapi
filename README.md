@@ -68,22 +68,22 @@ Install as a dev dependency in your project:
 
 ```bash
 # npm
-npm install --save-dev nextjs-openapi-codegen
+npm install --save-dev codegen-openapi
 
 # pnpm
-pnpm add -D nextjs-openapi-codegen
+pnpm add -D codegen-openapi
 
 # yarn
-yarn add -D nextjs-openapi-codegen
+yarn add -D codegen-openapi
 
 # bun
-bun add -d nextjs-openapi-codegen
+bun add -d codegen-openapi
 ```
 
 Or run directly without installing:
 
 ```bash
-npx nextjs-openapi-codegen run
+npx codegen-openapi run
 ```
 
 ### React projects — peer dependency
@@ -732,13 +732,11 @@ A server-side HTTP helper for use **inside route handlers** (server-only):
 
 Bug reports, feature requests, and pull requests are welcome.
 
-- Issues: [github.com/Last-Code-MgL/nextjs-openapi-codegen/issues](https://github.com/Last-Code-MgL/nextjs-openapi-codegen/issues)
-- Repository: [github.com/Last-Code-MgL/nextjs-openapi-codegen](https://github.com/Last-Code-MgL/nextjs-openapi-codegen)
+- Issues: [github.com/Last-Code-MgL/codegen-openapi/issues](https://github.com/Last-Code-MgL/codegen-openapi/issues)
+- Repository: [github.com/Last-Code-MgL/codegen-openapi](https://github.com/Last-Code-MgL/codegen-openapi)
 
 ---
 
 ## License
 
 MIT
-#   c o d e g e n - o p e n a p i  
- 

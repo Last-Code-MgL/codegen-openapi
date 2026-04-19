@@ -1,5 +1,5 @@
 /**
- * nextjs-openapi-codegen — Public API
+ * codegen-openapi — Public API
  *
  * Exports standalone generators for programmatic logic and execution.
  * Entirely decoupled from generic wrappers like Kubb or large frontend toolings.
@@ -10,12 +10,14 @@ export { generateRoutes } from './generateRoutes.js';
 export { generateServices } from './generateServices.js';
 export { generateApiClient } from './generateApiClient.js';
 export { generateFetchBackend } from './generateFetchBackend.js';
+export { generateHooks } from './generateHooks.js';
 
 // ─── Utilities ─────────────────────────────────────────────────────────────
 export {
   fetchSpec,
   extractOperations,
   toNextPath,
+  normalizeParamName,
   slugifyTag,
   resolveRef,
   refName,
@@ -30,6 +32,21 @@ export type { GenerateFetchBackendOptions } from './generateFetchBackend.js';
 export interface CodegenConfig {
   /** Identifier name (e.g., 'core', 'payments') */
   name?: string;
+
+  /**
+   * Target framework for code generation.
+   * - 'nextjs': generates routes, services, apiClient, fetchBackend
+   * - 'react': generates services, hooks (React Query), apiClient only
+   * @default 'nextjs'
+   */
+  framework?: 'nextjs' | 'react';
+
+  /**
+   * Output directory where the React Query hooks are generated.
+   * Only applicable when framework is 'react'.
+   * @default 'src/hooks'
+   */
+  hooksOut?: string;
 
   /**
    * Remote URL endpoint or local path directory parsing the OpenAPI/Swagger JSON struct.
