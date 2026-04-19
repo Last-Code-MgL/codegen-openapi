@@ -5,6 +5,7 @@
  *
  * Commands:
  *   openapi-gen run                  Interactive setup wizard (recommended for new projects)
+ *   openapi-gen add                  Add a new API to an existing config
  *   openapi-gen generate             Generate routes, services, apiClient and fetchBackend
  *   openapi-gen diff                 Show what changed in the spec vs what's on disk
  *   openapi-gen init                 Create a openapi-gen.config.mjs starter file
@@ -37,10 +38,11 @@ const dim = (s) => `${c.gray}${s}${c.reset}`;
 // ─── Help ─────────────────────────────────────────────────────────────────────
 function printHelp() {
   console.log(`
-${c.bold}openapi-gen${c.reset} ${dim('v1.0.0')}
+${c.bold}openapi-gen${c.reset} ${dim('v1.1.0')}
 
 ${c.bold}Usage:${c.reset}
   openapi-gen ${c.cyan}run${c.reset}                    Interactive setup wizard (start here)
+  openapi-gen ${c.cyan}add${c.reset}                    Add a new API to an existing config
   openapi-gen ${c.cyan}generate${c.reset}               Generate all files from config
   openapi-gen ${c.cyan}diff${c.reset}                   Show spec changes vs files on disk
   openapi-gen ${c.cyan}init${c.reset}                   Create a blank starter config file
@@ -155,7 +157,9 @@ async function loadConfig(configPath) {
 
   let configs;
   try {
-    const mod = await import(pathToFileURL(resolve(configPath)).href);
+    // Cache-bust so re-loads after writeConfigArray always reflect the latest file
+    const url = pathToFileURL(resolve(configPath)).href + '?t=' + Date.now();
+    const mod = await import(url);
     configs = mod.default ?? mod;
     if (!Array.isArray(configs)) configs = [configs];
   } catch (e) {
@@ -356,12 +360,199 @@ ${authLine}
   console.log(line);
 
   if (!shouldGenerate) {
-    console.log(`\n  Run ${c.cyan}npx openapi-gen generate${c.reset} whenever you're ready.\n`);
+    console.log(`\n  Run ${c.cyan}npx openapi-gen generate${c.reset} whenever you're ready.`);
+    console.log(`  To add more APIs:        ${c.cyan}npx openapi-gen add${c.reset}\n`);
     return;
   }
 
   console.log('');
   await runGenerate(configPath);
+  console.log(`  Tip: add more APIs anytime with ${c.cyan}npx openapi-gen add${c.reset}\n`);
+}
+
+// ─── Config serialization helpers ────────────────────────────────────────────
+
+function renderEntry(cfg) {
+  const lines = ['  {'];
+
+  const addField = (key, val) => {
+    if (val === undefined) return;
+    if (typeof val === 'boolean') {
+      lines.push(`    ${key}: ${val},`);
+    } else if (typeof val === 'string') {
+      lines.push(`    ${key}: '${val}',`);
+    } else if (typeof val === 'number') {
+      lines.push(`    ${key}: ${val},`);
+    } else if (val !== null && typeof val === 'object') {
+      lines.push(`    ${key}: {`);
+      for (const [k, v] of Object.entries(val)) {
+        if (v === undefined) continue;
+        if (typeof v === 'boolean' || typeof v === 'number') lines.push(`      ${k}: ${v},`);
+        else lines.push(`      ${k}: '${String(v)}',`);
+      }
+      lines.push(`    },`);
+    }
+  };
+
+  addField('name', cfg.name);
+  addField('framework', cfg.framework);
+  addField('spec', cfg.spec);
+  addField('routesOut', cfg.routesOut);
+  addField('servicesOut', cfg.servicesOut);
+  addField('hooksOut', cfg.hooksOut);
+  addField('apiEnvVar', cfg.apiEnvVar);
+  addField('apiFallback', cfg.apiFallback);
+  addField('stripPathPrefix', cfg.stripPathPrefix);
+  addField('cookieName', cfg.cookieName);
+  addField('apiClientPath', cfg.apiClientPath);
+  addField('apiClient', cfg.apiClient);
+  addField('fetchBackend', cfg.fetchBackend);
+
+  lines.push('  }');
+  return lines.join('\n');
+}
+
+function writeConfigArray(configPath, entries) {
+  const body = entries.map(renderEntry).join(',\n\n');
+  const content = [
+    '// openapi-gen.config.mjs',
+    '// Managed by openapi-gen — edit manually or run: openapi-gen add',
+    '',
+    "/** @type {import('codegen-openapi').CodegenConfig[]} */",
+    'export default [',
+    body + ',',
+    '];',
+    '',
+  ].join('\n');
+  writeFileSync(configPath, content, 'utf-8');
+}
+
+// ─── Add: Append a new API to existing config ─────────────────────────────────
+
+async function runAdd(configPath) {
+  if (!existsSync(configPath)) {
+    console.error(`\n${err(`No config found at: ${configPath}`)}`);
+    console.error(`  Run ${c.cyan}npx openapi-gen run${c.reset} first to create the initial config.\n`);
+    process.exit(1);
+  }
+
+  const existingConfigs = await loadConfig(configPath);
+  const base = existingConfigs[existingConfigs.length - 1];
+  const framework = base.framework ?? 'nextjs';
+  const isReact = framework === 'react';
+
+  const { createInterface } = await import('readline');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (q) => new Promise((res) => rl.question(q, res));
+
+  const line = `${c.gray}${'─'.repeat(56)}${c.reset}`;
+
+  const inheritedParts = [`framework=${framework}`];
+  if (base.cookieName) inheritedParts.push(`cookieName=${base.cookieName}`);
+  if (base.stripPathPrefix !== undefined) inheritedParts.push(`stripPathPrefix=${base.stripPathPrefix || '(none)'}`);
+
+  console.log(`\n${line}`);
+  console.log(`  ${c.bold}${c.cyan}openapi-gen${c.reset} ${c.bold}Add API${c.reset}`);
+  console.log(`${line}`);
+  console.log(`\n  Adding to ${c.cyan}${configPath}${c.reset} ${dim(`(${existingConfigs.length} API${existingConfigs.length > 1 ? 's' : ''} configured)`)}`);
+  console.log(`  ${dim(`Inheriting: ${inheritedParts.join(', ')}`)}`);
+  console.log(`${line}\n`);
+
+  // ── Step 1: API name ──────────────────────────────────────────────────────────
+  console.log(`  ${c.bold}Step 1${c.reset} — ${c.bold}API name${c.reset}`);
+  console.log(`  ${dim('Short identifier used in CLI output and as default folder name.')}`);
+  let name = '';
+  while (!name) {
+    name = (await ask(`  Name ${dim('(e.g. payments)')}:  `)).trim();
+    if (!name) console.log(`  ${err('Name is required.')}`);
+  }
+
+  // ── Step 2: Spec ──────────────────────────────────────────────────────────────
+  console.log(`\n  ${c.bold}Step 2${c.reset} — ${c.bold}OpenAPI spec${c.reset}`);
+  console.log(`  ${dim('URL or local file path to the OpenAPI JSON spec.')}`);
+  let spec = '';
+  while (!spec) {
+    spec = (await ask(`  Spec URL or path ${c.red}(required)${c.reset}:  `)).trim();
+    if (!spec) console.log(`  ${err('Spec is required.')}`);
+  }
+
+  // ── Step 3: Authentication ────────────────────────────────────────────────────
+  let cookieName;
+  console.log(`\n  ${c.bold}Step 3${c.reset} — ${c.bold}Authentication${c.reset}`);
+  if (base.cookieName) {
+    console.log(`  ${dim(`Base API uses cookieName='${base.cookieName}'`)}`);
+    console.log(`  ${dim('Enter to keep the same  |  type a new name to override  |  - to disable auth')}`);
+    const cookieInput = (await ask(`  Cookie name ${dim(`(${base.cookieName})`)}:  `)).trim();
+    if (cookieInput === '')        cookieName = base.cookieName;   // inherit
+    else if (cookieInput === '-')  cookieName = undefined;          // disable
+    else                           cookieName = cookieInput;        // override
+  } else {
+    console.log(`  ${dim('Base API has no auth. Enter a cookie name to enable, or leave blank to skip.')}`);
+    const cookieInput = (await ask(`  Cookie name ${dim('(leave blank to skip)')}:  `)).trim();
+    cookieName = cookieInput || undefined;
+  }
+
+  // ── Step 4: Output dirs (framework-specific) ──────────────────────────────────
+  const nameUp = name.toUpperCase().replace(/-/g, '_');
+  let routesOut, servicesOut, hooksOut, apiEnvVar, apiFallback;
+
+  console.log(`\n  ${c.bold}Step 4${c.reset} — ${c.bold}Output directories${c.reset}`);
+  console.log(`  ${dim('Press Enter to accept the default shown in (parentheses).')}`);
+
+  if (!isReact) {
+    const defaultRoutes = base.routesOut ?? 'src/app/api';
+    routesOut   = (await ask(`  Routes output    ${dim(`(${defaultRoutes})`)}:  `)).trim() || defaultRoutes;
+    servicesOut = (await ask(`  Services output  ${dim(`(src/services/${name})`)}:  `)).trim() || `src/services/${name}`;
+
+    console.log(`\n  ${c.bold}Step 5${c.reset} — ${c.bold}Backend URL${c.reset}`);
+    apiEnvVar   = (await ask(`  Env variable     ${dim(`(${nameUp}_API_URL)`)}:  `)).trim() || `${nameUp}_API_URL`;
+    apiFallback = (await ask(`  Fallback URL     ${dim('(leave blank)')}:  `)).trim() || '';
+  } else {
+    servicesOut = (await ask(`  Services output  ${dim(`(src/services/${name})`)}:  `)).trim() || `src/services/${name}`;
+    hooksOut    = (await ask(`  Hooks output     ${dim(`(src/hooks/${name})`)}:  `)).trim() || `src/hooks/${name}`;
+  }
+
+  // ── Final step: Generate now? ─────────────────────────────────────────────────
+  const stepNum = isReact ? 5 : 6;
+  console.log(`\n  ${c.bold}Step ${stepNum}${c.reset} — ${c.bold}Generate now${c.reset}`);
+  const doGenerate = (await ask(`  Run generate immediately after saving? ${dim('(Y/n)')}:  `)).trim().toLowerCase();
+  const shouldGenerate = doGenerate !== 'n';
+
+  rl.close();
+
+  // Build new entry — inherit shared settings from base, set apiClient/fetchBackend to false
+  const newEntry = {
+    name,
+    framework,
+    spec,
+    ...(routesOut !== undefined ? { routesOut } : {}),
+    servicesOut,
+    ...(hooksOut !== undefined ? { hooksOut } : {}),
+    ...(apiEnvVar ? { apiEnvVar } : {}),
+    ...(apiFallback ? { apiFallback } : {}),
+    stripPathPrefix: base.stripPathPrefix ?? '/api',
+    ...(cookieName ? { cookieName } : {}),
+    apiClient:    false,
+    fetchBackend: false,
+  };
+
+  const allEntries = [...existingConfigs, newEntry];
+  writeConfigArray(configPath, allEntries);
+
+  console.log(`\n${line}`);
+  console.log(`  ${ok(`Config updated: ${configPath}`)}`);
+  console.log(`  ${dim(`${allEntries.length} APIs configured`)}`);
+  console.log(line);
+
+  if (!shouldGenerate) {
+    console.log(`\n  Run ${c.cyan}npx openapi-gen generate${c.reset} to generate all ${allEntries.length} APIs.`);
+    console.log(`  To add more APIs:        ${c.cyan}npx openapi-gen add${c.reset}\n`);
+    return;
+  }
+
+  console.log('');
+  await runGenerate(configPath);
+  console.log(`  Tip: add more APIs anytime with ${c.cyan}npx openapi-gen add${c.reset}\n`);
 }
 
 // ─── Init: Scaffolding a configuration file natively ──────────────────────────
@@ -457,7 +648,6 @@ async function runGenerate(configPath) {
       apiEnvVar = 'API_URL',
       apiFallback = '',
       stripPathPrefix = '/api',
-      apiModule,
       apiClientPath = '@/lib/apiClient',
       cookieName,
       apiClient: apiClientOpts,
@@ -520,7 +710,7 @@ async function runGenerate(configPath) {
     // 5. Services — both frameworks
     try {
       const serviceFiles = await generateServices({
-        spec: parsedSpec, stripPathPrefix, apiModule, servicesOut, apiClientPath, cwd,
+        spec: parsedSpec, stripPathPrefix, servicesOut, apiClientPath, cwd,
       });
       totalServices += serviceFiles.length;
       console.log(`  ${ok(`${serviceFiles.length} service file(s)   →  ${servicesOut}/`)}`);
@@ -763,6 +953,9 @@ if (args.includes('--help') || args.includes('-h')) {
 switch (command) {
   case 'run':
     await runWizard(configPath);
+    break;
+  case 'add':
+    await runAdd(configPath);
     break;
   case 'init':
     runInit(configPath);
