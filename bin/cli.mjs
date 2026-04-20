@@ -438,6 +438,7 @@ function writeConfigArray(configPath, entries) {
   const content = [
     '// openapi-gen.config.mjs',
     '// Managed by openapi-gen — edit manually or run: openapi-gen add',
+    '// To generate routes and services for all APIs: npx openapi-gen generate',
     '',
     "/** @type {import('codegen-openapi').CodegenConfig[]} */",
     'export default [',
