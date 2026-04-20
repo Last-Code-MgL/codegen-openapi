@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
-import { toNextPath, normalizeParamName, extractOperations, fetchSpec } from './utils.js';
+import { buildPathTree, toNextPathWithTree, buildParamMap, extractOperations, fetchSpec } from './utils.js';
 
 function buildBackendUrl(path: string, paramMap: Record<string, string>) {
   const withParams = path.replace(/\{(\w+)\}/g, (_, p) => `\${params.${paramMap[p] ?? p}}`);
@@ -8,7 +8,7 @@ function buildBackendUrl(path: string, paramMap: Record<string, string>) {
 }
 
 function renderHandler(op: any, { apiEnvVar, apiFallback }: any) {
-  const { method, path, pathParams, hasBody, hasQueryParams, bodyContentType, summary } = op;
+  const { method, path, pathParams, hasBody, hasQueryParams, bodyContentType, summary, paramMap } = op;
   const hasPathParams = pathParams.length > 0;
   const isMultipart   = hasBody && bodyContentType === 'multipart/form-data';
   const isJson        = hasBody && !isMultipart; // fallback to JSON
@@ -37,10 +37,6 @@ function renderHandler(op: any, { apiEnvVar, apiFallback }: any) {
     lines.push(`    const params = await context.params;`);
   }
 
-  // URL compilation — map original spec param names to normalized Next.js param names
-  const paramMap: Record<string, string> = Object.fromEntries(
-    pathParams.map((p: string) => [p, normalizeParamName(p, pathParams)])
-  );
   const backendUrl = buildBackendUrl(path, paramMap);
   if (hasQueryParams) {
     lines.push(`    const { searchParams } = new URL(request.url);`);
@@ -125,12 +121,15 @@ export async function generateRoutes({
   const parsed     = typeof spec === 'string' ? await fetchSpec(spec) : spec;
   const operations = extractOperations(parsed, { stripPathPrefix });
 
+  // Build tree once from all paths to resolve cross-path dynamic segment conflicts
+  const tree = buildPathTree(operations.map((op: any) => op.path));
+
   // Group by Next.js path (multiple methods mapping to the same route.ts file)
   const byPath = new Map<string, any[]>();
   for (const op of operations) {
-    const nextPath = toNextPath(op.path);
+    const nextPath = toNextPathWithTree(op.path, tree);
     if (!byPath.has(nextPath)) byPath.set(nextPath, []);
-    byPath.get(nextPath)!.push(op);
+    byPath.get(nextPath)!.push({ ...op, paramMap: buildParamMap(op.path, tree) });
   }
 
   const files: string[] = [];

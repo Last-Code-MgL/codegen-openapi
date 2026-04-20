@@ -32,6 +32,82 @@ export function getPathParams(openApiPath: string) {
   return [...openApiPath.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
 }
 
+// ─── Path tree (cross-path dynamic segment conflict resolution) ───────────────
+
+export interface PathTreeNode {
+  canonicalParam?: string;
+  children: Map<string, PathTreeNode>;
+}
+
+/**
+ * Builds a segment tree from all OpenAPI paths so dynamic segments at the same
+ * folder level always use the same canonical param name across all routes.
+ * This prevents the Next.js "different slug names for the same dynamic path" error.
+ * First param name encountered at a given level wins.
+ */
+export function buildPathTree(paths: string[]): PathTreeNode {
+  const root: PathTreeNode = { children: new Map() };
+  for (const path of paths) {
+    const segs = path.split('/').filter(Boolean);
+    let node = root;
+    for (const seg of segs) {
+      if (seg.startsWith('{') && seg.endsWith('}')) {
+        if (!node.children.has('*')) {
+          node.children.set('*', { canonicalParam: seg.slice(1, -1), children: new Map() });
+        }
+        node = node.children.get('*')!;
+      } else {
+        if (!node.children.has(seg)) node.children.set(seg, { children: new Map() });
+        node = node.children.get(seg)!;
+      }
+    }
+  }
+  return root;
+}
+
+/**
+ * Converts an OpenAPI path to a Next.js dynamic routing path using a pre-built
+ * path tree, guaranteeing cross-path canonical param name consistency.
+ */
+export function toNextPathWithTree(path: string, tree: PathTreeNode): string {
+  const segs = path.split('/').filter(Boolean);
+  const out: string[] = [];
+  let node = tree;
+  for (const seg of segs) {
+    if (seg.startsWith('{') && seg.endsWith('}')) {
+      const dyn = node.children.get('*');
+      out.push(`[${dyn?.canonicalParam ?? seg.slice(1, -1)}]`);
+      node = dyn ?? { children: new Map() };
+    } else {
+      out.push(seg);
+      node = node.children.get(seg) ?? { children: new Map() };
+    }
+  }
+  return '/' + out.join('/');
+}
+
+/**
+ * Builds a mapping of { originalSpecParamName → canonicalNextjsParamName } for
+ * a single path using the global path tree. Used by route handlers and services
+ * to keep param references consistent with the generated folder structure.
+ */
+export function buildParamMap(path: string, tree: PathTreeNode): Record<string, string> {
+  const segs = path.split('/').filter(Boolean);
+  const map: Record<string, string> = {};
+  let node = tree;
+  for (const seg of segs) {
+    if (seg.startsWith('{') && seg.endsWith('}')) {
+      const orig = seg.slice(1, -1);
+      const dyn = node.children.get('*');
+      map[orig] = dyn?.canonicalParam ?? orig;
+      node = dyn ?? { children: new Map() };
+    } else {
+      node = node.children.get(seg) ?? { children: new Map() };
+    }
+  }
+  return map;
+}
+
 // ─── Tag / slug helpers ───────────────────────────────────────────────────────
 
 /**

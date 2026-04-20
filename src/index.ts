@@ -16,6 +16,11 @@ export { generateHooks } from './generateHooks.js';
 export {
   fetchSpec,
   extractOperations,
+  // path tree (cross-path conflict resolution)
+  buildPathTree,
+  toNextPathWithTree,
+  buildParamMap,
+  // legacy single-path helpers
   toNextPath,
   normalizeParamName,
   slugifyTag,
@@ -23,6 +28,7 @@ export {
   refName,
   getSuccessResponseSchema,
 } from './utils.js';
+export type { PathTreeNode } from './utils.js';
 
 // ─── Public Types ───────────────────────────────────────────────────────────
 export type { GenerateApiClientOptions } from './generateApiClient.js';
