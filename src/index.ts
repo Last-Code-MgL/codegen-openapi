@@ -48,11 +48,19 @@ export interface CodegenConfig {
   framework?: 'nextjs' | 'react';
 
   /**
-   * Output directory where the React Query hooks are generated.
+   * Output directory where the hooks are generated.
    * Only applicable when framework is 'react'.
    * @default 'src/hooks'
    */
   hooksOut?: string;
+
+  /**
+   * Hooks generation strategy for React framework.
+   * - 'react-query': generates useQuery/useMutation hooks (requires @tanstack/react-query)
+   * - 'fetch':       generates useState/useEffect hooks with zero extra dependencies
+   * @default 'react-query'
+   */
+  hooksMode?: 'react-query' | 'fetch';
 
   /**
    * Remote URL endpoint or local path directory parsing the OpenAPI/Swagger JSON struct.

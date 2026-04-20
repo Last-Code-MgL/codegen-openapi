@@ -1,12 +1,13 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
-  normalizeParamName,
+  buildPathTree,
+  buildParamMap,
   operationIdToMethodName,
   slugifyTag,
   extractOperations,
   fetchSpec,
-  getSuccessResponseSchema,
+  type PathTreeNode,
 } from './utils.js';
 
 // ─── Aliases (mirrors generateServices.ts pattern) ────────────────────────────
@@ -27,32 +28,35 @@ function getAliases(op: any) {
   };
 }
 
-// ─── Hook renderer ────────────────────────────────────────────────────────────
+function slugToCamel(slug: string) {
+  return slug
+    .split('-')
+    .map((w: string, i: number) => (i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join('');
+}
 
-function renderQueryHook(op: any, serviceVarName: string) {
+// ─── React Query hooks ────────────────────────────────────────────────────────
+
+function renderQueryHook(op: any, serviceVarName: string, tree: PathTreeNode) {
   const { methodName, hookName, aliasResponse, aliasParams } = getAliases(op);
   const { path, pathParams, hasQueryParams, summary } = op;
 
-  const normalizedParams: string[] = pathParams.map((p: string) =>
-    normalizeParamName(p, pathParams),
-  );
+  const paramMap = buildParamMap(path, tree);
+  const canonicalParams: string[] = pathParams.map((p: string) => paramMap[p] ?? p);
 
-  // Build function arguments
   const args: string[] = [];
-  normalizedParams.forEach((p: string) => args.push(`${p}: string`));
+  canonicalParams.forEach((p: string) => args.push(`${p}: string`));
   if (aliasParams && hasQueryParams) args.push(`params?: ${aliasParams}`);
 
-  // Build queryKey: ['tag', param1, param2, ...]
-  const queryKeyItems = ['tag', ...normalizedParams.map((p) => p)];
+  const queryKeyItems = ['tag', ...canonicalParams];
   if (aliasParams && hasQueryParams) queryKeyItems.push('params');
   const queryKey = `[${queryKeyItems.join(', ')}]`;
 
-  // Build service call args
-  const serviceArgs = [...normalizedParams];
+  const serviceArgs = [...canonicalParams];
   if (aliasParams && hasQueryParams) serviceArgs.push('params');
 
-  const enabled = normalizedParams.length > 0
-    ? `\n    enabled: ${normalizedParams.map((p) => `!!${p}`).join(' && ')},`
+  const enabled = canonicalParams.length > 0
+    ? `\n    enabled: ${canonicalParams.map((p) => `!!${p}`).join(' && ')},`
     : '';
 
   const comment = summary ? `/** ${summary} */\n` : '';
@@ -65,24 +69,21 @@ function renderQueryHook(op: any, serviceVarName: string) {
 }`;
 }
 
-function renderMutationHook(op: any, serviceVarName: string, tagKey: string) {
+function renderMutationHook(op: any, serviceVarName: string, tagKey: string, tree: PathTreeNode) {
   const { methodName, hookName, aliasResponse, aliasBody } = getAliases(op);
-  const { pathParams, hasBody, summary } = op;
+  const { path, pathParams, hasBody, summary } = op;
 
-  const normalizedParams: string[] = pathParams.map((p: string) =>
-    normalizeParamName(p, pathParams),
-  );
+  const paramMap = buildParamMap(path, tree);
+  const canonicalParams: string[] = pathParams.map((p: string) => paramMap[p] ?? p);
 
-  // Mutation variables type: combine path params + body
   const varFields: string[] = [];
-  normalizedParams.forEach((p: string) => varFields.push(`${p}: string`));
+  canonicalParams.forEach((p: string) => varFields.push(`${p}: string`));
   if (aliasBody && hasBody) varFields.push(`body: ${aliasBody}`);
 
   const varsType = varFields.length > 0 ? `{ ${varFields.join('; ')} }` : 'void';
 
-  // Build service call args from variables
   const serviceArgs: string[] = [];
-  normalizedParams.forEach((p: string) => serviceArgs.push(`vars.${p}`));
+  canonicalParams.forEach((p: string) => serviceArgs.push(`vars.${p}`));
   if (aliasBody && hasBody) serviceArgs.push('vars.body');
 
   const mutationFn = varFields.length > 0
@@ -102,11 +103,98 @@ function renderMutationHook(op: any, serviceVarName: string, tagKey: string) {
 }`;
 }
 
+// ─── Plain fetch hooks (useState + useEffect, zero dependencies) ──────────────
+
+function renderFetchQueryHook(op: any, serviceVarName: string, tree: PathTreeNode) {
+  const { methodName, hookName, aliasResponse, aliasParams } = getAliases(op);
+  const { path, pathParams, hasQueryParams, summary } = op;
+
+  const paramMap = buildParamMap(path, tree);
+  const canonicalParams: string[] = pathParams.map((p: string) => paramMap[p] ?? p);
+
+  const args: string[] = [];
+  canonicalParams.forEach((p: string) => args.push(`${p}: string`));
+  if (aliasParams && hasQueryParams) args.push(`params?: ${aliasParams}`);
+
+  const serviceArgs = [...canonicalParams];
+  if (aliasParams && hasQueryParams) serviceArgs.push('params');
+
+  const hasDeps   = canonicalParams.length > 0;
+  const deps      = hasDeps ? `[${canonicalParams.join(', ')}]` : '[]';
+  const guard     = hasDeps ? `\n    if (${canonicalParams.map(p => `!${p}`).join(' || ')}) { setLoading(false); return; }` : '';
+  const initState = hasDeps ? `!!${canonicalParams.map(p => p).join(' && ')}` : 'true';
+
+  const comment = summary ? `/** ${summary} */\n` : '';
+
+  return `${comment}export function ${hookName}(${args.join(', ')}) {
+  const [data, setData] = useState<${aliasResponse} | null>(null);
+  const [loading, setLoading] = useState(${initState});
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {${guard}
+    let cancelled = false;
+    setLoading(true);
+    ${serviceVarName}.${methodName}(${serviceArgs.join(', ')})
+      .then(res => { if (!cancelled) { setData(res); setLoading(false); } })
+      .catch(e => { if (!cancelled) { setError(e instanceof Error ? e : new Error(String(e))); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, ${deps});
+
+  return { data, loading, error };
+}`;
+}
+
+function renderFetchMutationHook(op: any, serviceVarName: string, tree: PathTreeNode) {
+  const { methodName, hookName, aliasResponse, aliasBody } = getAliases(op);
+  const { path, pathParams, hasBody, summary } = op;
+
+  const paramMap = buildParamMap(path, tree);
+  const canonicalParams: string[] = pathParams.map((p: string) => paramMap[p] ?? p);
+
+  const varFields: string[] = [];
+  canonicalParams.forEach((p: string) => varFields.push(`${p}: string`));
+  if (aliasBody && hasBody) varFields.push(`body: ${aliasBody}`);
+
+  const varsType = varFields.length > 0 ? `{ ${varFields.join('; ')} }` : 'void';
+
+  const serviceArgs: string[] = [];
+  canonicalParams.forEach((p: string) => serviceArgs.push(`vars.${p}`));
+  if (aliasBody && hasBody) serviceArgs.push('vars.body');
+
+  const mutateArg  = varFields.length > 0 ? `vars: ${varsType}` : '';
+  const awaitCall  = `await ${serviceVarName}.${methodName}(${serviceArgs.join(', ')})`;
+
+  const comment = summary ? `/** ${summary} */\n` : '';
+
+  return `${comment}export function ${hookName}() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const mutate = async (${mutateArg}): Promise<${aliasResponse}> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = ${awaitCall};
+      return result;
+    } catch (e) {
+      const caught = e instanceof Error ? e : new Error(String(e));
+      setError(caught);
+      throw caught;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return { mutate, loading, error };
+}`;
+}
+
 // ─── Hooks file renderer ──────────────────────────────────────────────────────
 
-function renderHooksFile({ tag, slug, operations, servicesOut }: any) {
+function renderHooksFile({ slug, operations, servicesOut, hooksMode, tree }: any) {
   const serviceVarName = slugToCamel(slug) + 'Service';
   const tagKey = JSON.stringify(slug);
+  const isFetch = hooksMode === 'fetch';
 
   const typeImports: string[] = [];
   for (const op of operations) {
@@ -119,28 +207,30 @@ function renderHooksFile({ tag, slug, operations, servicesOut }: any) {
   const hooks = operations
     .map((op: any) => {
       const isGet = op.method === 'GET';
+      if (isFetch) {
+        return isGet
+          ? renderFetchQueryHook(op, serviceVarName, tree)
+          : renderFetchMutationHook(op, serviceVarName, tree);
+      }
       return isGet
-        ? renderQueryHook(op, serviceVarName)
-        : renderMutationHook(op, serviceVarName, tagKey);
+        ? renderQueryHook(op, serviceVarName, tree)
+        : renderMutationHook(op, serviceVarName, tagKey, tree);
     })
     .join('\n\n');
 
+  const importLine = isFetch
+    ? `import { useState, useEffect } from 'react';`
+    : `import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';`;
+
+  const tagConst = isFetch ? '' : `\nconst tag = ${tagKey};\n`;
+
   return `// Auto-generated by codegen-openapi — do not edit manually
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+${importLine}
 import ${serviceVarName} from '${servicesOut}/${slug}';
 import type { ${typeImports.join(', ')} } from '${servicesOut}/${slug}/types';
-
-const tag = ${tagKey};
-
+${tagConst}
 ${hooks}
 `;
-}
-
-function slugToCamel(slug: string) {
-  return slug
-    .split('-')
-    .map((w: string, i: number) => (i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1)))
-    .join('');
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -150,10 +240,14 @@ export async function generateHooks({
   stripPathPrefix,
   hooksOut,
   servicesOut,
+  hooksMode = 'react-query',
   cwd,
 }: any) {
   const parsed = typeof spec === 'string' ? await fetchSpec(spec) : spec;
   const operations = extractOperations(parsed, { stripPathPrefix });
+
+  // Build tree once for cross-path canonical param consistency
+  const tree = buildPathTree(operations.map((op: any) => op.path));
 
   const byTag = new Map<string, any[]>();
   for (const op of operations) {
@@ -171,7 +265,7 @@ export async function generateHooks({
     const hooksFile = join(hooksOut, slug, 'index.ts');
     writeFileSync(
       join(cwd, hooksFile),
-      renderHooksFile({ tag, slug, operations: ops, servicesOut }),
+      renderHooksFile({ slug, operations: ops, servicesOut, hooksMode, tree }),
       'utf-8',
     );
     files.push(hooksFile);

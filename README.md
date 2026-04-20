@@ -1,6 +1,6 @@
 # codegen-openapi
 
-A lightning-fast, zero-dependency CLI that generates **Next.js App Router API Route Handlers**, fully typed **Frontend Services**, and **React Query hooks** directly from any OpenAPI / Swagger specification.
+A lightning-fast, zero-dependency CLI that generates **Next.js App Router API Route Handlers**, fully typed **Frontend Services**, and **React hooks** directly from any OpenAPI / Swagger specification.
 
 Works with **Next.js** (App Router) and standalone **React** projects.
 
@@ -30,6 +30,7 @@ Stop writing boilerplate. Connect your APIs in seconds.
   - [routesOut](#routesout)
   - [servicesOut](#servicesout)
   - [hooksOut](#hooksout)
+  - [hooksMode](#hooksmode)
   - [apiEnvVar](#apienvvar)
   - [apiFallback](#apifallback)
   - [stripPathPrefix](#strippathprefix)
@@ -41,7 +42,7 @@ Stop writing boilerplate. Connect your APIs in seconds.
 - [What Gets Generated](#what-gets-generated)
   - [Next.js: Route Handlers](#nextjs-route-handlers)
   - [Typed Services](#typed-services)
-  - [React Query Hooks](#react-query-hooks)
+  - [React Hooks](#react-hooks)
   - [apiClient.ts](#apiclientts)
   - [fetchBackend.ts](#fetchbackendts)
 - [Contributing](#contributing)
@@ -53,8 +54,10 @@ Stop writing boilerplate. Connect your APIs in seconds.
 
 - **Zero dependencies** — powered by raw Node.js builtins, no bloated toolchains
 - **Next.js 13+ App Router native** — generates modern `route.ts` handlers with async `context.params` (Next.js 15+ ready)
-- **React support** — generates typed services and React Query hooks for standalone React projects
+- **React support** — generates typed services and hooks for standalone React projects
+- **Two hook strategies** — choose `react-query` (useQuery/useMutation with caching) or `fetch` (useState/useEffect with zero extra deps)
 - **End-to-end TypeScript** — types derived directly from your OpenAPI schemas, including `allOf`, `oneOf`, `anyOf`, and nullable support
+- **Dynamic route conflict resolution** — automatically normalizes clashing path params (e.g. `{id}` vs `{userId}` at the same folder level) so Next.js never throws the "different slug names" error
 - **Authentication built-in** — automatic JWT cookie propagation between browser, route handler, and backend API (optional)
 - **Interactive setup** — `openapi-gen run` guides you through the full configuration in under a minute
 - **Diff before you generate** — `openapi-gen diff` shows exactly what changed in your spec before writing any files
@@ -84,18 +87,20 @@ bun add -d codegen-openapi
 Or run directly without installing:
 
 ```bash
-npx codegen-openapi run
+npx openapi-gen run
 ```
 
-### React projects — peer dependency
+### React projects — optional peer dependency
 
-If you use `framework: 'react'`, the generated hooks require `@tanstack/react-query` in your project:
+If you use `framework: 'react'` with `hooksMode: 'react-query'` (the default), the generated hooks require `@tanstack/react-query` installed in your project:
 
 ```bash
 npm install @tanstack/react-query
 ```
 
-The codegen itself has zero dependencies — it only *generates* code that uses React Query. Your app still needs it installed.
+If you use `hooksMode: 'fetch'` instead, no extra dependency is needed — hooks use `useState` and `useEffect` from React itself.
+
+The codegen itself has zero dependencies regardless of which mode you choose.
 
 ---
 
@@ -107,7 +112,7 @@ The codegen itself has zero dependencies — it only *generates* code that uses 
 npx openapi-gen run
 ```
 
-Guides you through 7 questions, saves your config, generates everything, and asks if you want to connect a second API right away.
+Guides you through setup, saves your config, generates everything, and asks if you want to connect a second API right away.
 
 **Connect a second (or third) API to the same project:**
 
@@ -115,7 +120,7 @@ Guides you through 7 questions, saves your config, generates everything, and ask
 npx openapi-gen add
 ```
 
-Asks only name + spec URL — inherits auth, framework and shared settings from your existing config.
+Asks only name + spec URL — inherits auth, framework, hooks mode, and shared settings from your existing config.
 
 **Re-generate after your backend changes:**
 
@@ -154,6 +159,7 @@ npx openapi-gen run --config ./configs/my-api.mjs
 **What it asks:**
 
 1. **Framework** — `nextjs` or `react`
+   - *If `react`:* **Hooks library** — `react-query` or `fetch` (asked immediately after)
 2. **API name** — label for CLI output
 3. **OpenAPI spec** — URL or local file path of your first API *(required)*
 4. **Path prefix to strip** — prevents double-nesting like `/api/api/users`
@@ -188,14 +194,15 @@ npx openapi-gen add
 npx openapi-gen add --config ./configs/my-api.mjs
 ```
 
-Appends a new API entry to an existing config file. This is the fastest way to connect a second (or third) backend service — it inherits your existing framework, auth, and shared settings so you only answer what's different.
+Appends a new API entry to an existing config file. This is the fastest way to connect a second (or third) backend service — it inherits your existing framework, auth, hooks mode, and shared settings so you only answer what's different.
 
-**What it asks (6 steps for Next.js, 5 for React):**
+**What it asks (Next.js: 6 steps, React: 5 steps):**
 
 1. **API name** — label and default folder name for this API
 2. **OpenAPI spec** — URL or local file path for the new service
 3. **Authentication** — keep the same JWT cookie, use a different one, or disable auth for this API
 4. **Output directories** — routes, services (and hooks if React) with smart defaults
+   - *If `react`:* **Hooks library** — inherit from base or override (`react-query` / `fetch`)
 5. **Backend URL** *(Next.js only)* — env variable and fallback for this service
 6. **Generate now?** — re-run `generate` for all APIs immediately
 
@@ -205,11 +212,12 @@ Appends a new API entry to an existing config file. This is the fastest way to c
 |-------|---------------|
 | `framework` | first entry |
 | `cookieName` | first entry (overridable in step 3) |
+| `hooksMode` | first entry (overridable in step 4 for React) |
 | `stripPathPrefix` | first entry |
 | `apiClient` | set to `false` — already generated |
 | `fetchBackend` | set to `false` — already generated |
 
-**Example session:**
+**Example session (Next.js):**
 
 ```
 openapi-gen add
@@ -229,7 +237,7 @@ openapi-gen add
   Cookie name (accessToken):
 
   Step 4 — Output directories
-  Routes output    (src/app/api):
+  Routes output    (src/app/api):  src/app/api/payments
   Services output  (src/services/payments):
 
   Step 5 — Backend URL
@@ -275,7 +283,7 @@ Reads your config and generates all output files. The exact steps depend on `fra
 2. Generates `apiClient.ts` (unless `apiClient: false`)
 3. Fetches the OpenAPI spec
 4. Generates one service directory per OpenAPI tag
-5. Generates one hooks file per OpenAPI tag (`hooksOut/{slug}/index.ts`)
+5. Generates one hooks file per OpenAPI tag (`hooksOut/{slug}/index.ts`) — style depends on `hooksMode`
 
 **Options:**
 
@@ -408,7 +416,7 @@ Controls which files are generated:
 | `fetchBackend.ts` | ✅ | — |
 | `route.ts` per path | ✅ | — |
 | Services per tag | ✅ | ✅ |
-| React Query hooks per tag | — | ✅ |
+| Hooks per tag | — | ✅ (style set by `hooksMode`) |
 
 ```js
 framework: 'react'
@@ -465,6 +473,14 @@ Directory where generated `route.ts` files are written. Created automatically if
 routesOut: 'src/app/api'
 ```
 
+> When connecting multiple APIs, use different `routesOut` values to avoid route files from one API overwriting another:
+> ```js
+> // core API
+> routesOut: 'src/app/api'
+> // payments API
+> routesOut: 'src/app/api/payments'
+> ```
+
 ---
 
 ### `servicesOut`
@@ -492,10 +508,36 @@ servicesOut: 'src/services'
 | Default | `"src/hooks"` |
 | Applies to | `react` only |
 
-Directory where generated React Query hook files are written. Each OpenAPI tag becomes a subdirectory containing an `index.ts`. Created automatically if it does not exist.
+Directory where generated hook files are written. Each OpenAPI tag becomes a subdirectory containing an `index.ts`. Created automatically if it does not exist.
 
 ```js
 hooksOut: 'src/hooks'
+```
+
+---
+
+### `hooksMode`
+
+| | |
+|---|---|
+| Type | `'react-query' \| 'fetch'` |
+| Required | No |
+| Default | `'react-query'` |
+| Applies to | `react` only |
+
+Controls the style of hooks generated in `hooksOut`. Choose based on whether you want caching and deduplication or a zero-dependency solution.
+
+| | `react-query` | `fetch` |
+|---|---|---|
+| GET hooks | `useQuery` | `useState` + `useEffect` |
+| Mutation hooks | `useMutation` + `invalidateQueries` | `mutate` async function |
+| Caching & deduplication | ✅ automatic | ❌ manual |
+| Background refetch | ✅ | ❌ |
+| Extra dependency | `@tanstack/react-query` | none |
+
+```js
+hooksMode: 'react-query'  // default — recommended for most apps
+hooksMode: 'fetch'        // zero extra deps, plain React
 ```
 
 ---
@@ -603,7 +645,7 @@ apiClientPath: '@/lib/apiClient'
 | Required | No |
 | Default | `{}` (generates with defaults) |
 
-Controls generation of `apiClient.ts`. Set to `false` to skip this file entirely.
+Controls generation of `apiClient.ts`. Set to `false` to skip this file entirely (useful for secondary API entries that share the first entry's client).
 
 ```js
 apiClient: {
@@ -621,7 +663,7 @@ apiClient: {
   unauthorizedRedirect: '/auth',
 }
 
-// Skip generation:
+// Skip generation (secondary API entries reuse the first entry's file):
 apiClient: false
 ```
 
@@ -658,7 +700,9 @@ fetchBackend: false
 
 ### Multiple APIs
 
-Pass multiple objects in the array to manage several APIs in one project. Each entry runs independently:
+Pass multiple objects in the array to manage several APIs in one project. Each entry runs independently. The first entry generates the shared `apiClient.ts` and `fetchBackend.ts`; subsequent entries set those to `false` to reuse them.
+
+**Important:** When multiple Next.js APIs share the same `routesOut`, route files from different APIs can overwrite each other if they have overlapping paths. Use distinct subdirectories:
 
 ```js
 /** @type {import('codegen-openapi').CodegenConfig[]} */
@@ -667,17 +711,59 @@ export default [
     name:        'core',
     framework:   'nextjs',
     spec:        'https://api.example.com/api-json',
-    routesOut:   'src/app/api',
-    servicesOut: 'src/services/core',
+    routesOut:   'src/app/api',           // ← core owns the root
+    servicesOut: 'src/services',
     apiEnvVar:   'CORE_API_URL',
+    apiFallback: 'https://api.example.com',
+    stripPathPrefix: '/api',
+    cookieName:  'accessToken',
+    apiClient: {
+      outputPath:           'src/lib/apiClient.ts',
+      unauthorizedRedirect: '/auth',
+    },
+    fetchBackend: {
+      outputPath: 'src/lib/fetchBackend.ts',
+      timeout:    15000,
+    },
   },
   {
     name:        'payments',
-    framework:   'react',
+    framework:   'nextjs',
     spec:        'https://payments.example.com/api-json',
+    routesOut:   'src/app/api/payments',  // ← dedicated subfolder
     servicesOut: 'src/services/payments',
-    hooksOut:    'src/hooks/payments',
-    apiClient:   false,   // already handled by the core entry
+    apiEnvVar:   'PAYMENTS_API_URL',
+    apiFallback: 'https://payments.example.com',
+    stripPathPrefix: '/api',
+    cookieName:  'accessToken',
+    apiClient:   false,   // reuse core's apiClient.ts
+    fetchBackend: false,  // reuse core's fetchBackend.ts
+  },
+];
+```
+
+**React example with different hook strategies per API:**
+
+```js
+export default [
+  {
+    name:      'main',
+    framework: 'react',
+    spec:      'https://api.example.com/api-json',
+    servicesOut: 'src/services',
+    hooksOut:    'src/hooks',
+    hooksMode:   'react-query',   // full caching for main API
+    cookieName:  'accessToken',
+    apiClient: { outputPath: 'src/lib/apiClient.ts' },
+  },
+  {
+    name:      'analytics',
+    framework: 'react',
+    spec:      'https://analytics.example.com/api-json',
+    servicesOut: 'src/services/analytics',
+    hooksOut:    'src/hooks/analytics',
+    hooksMode:   'fetch',         // lightweight for analytics
+    apiClient:   false,
   },
 ];
 ```
@@ -702,7 +788,7 @@ src/app/api/
       route.ts
 ```
 
-Path parameters ending in `Id` (e.g. `{userId}`, `{componentId}`) are automatically normalized to `[id]` in the folder name. When multiple params in the same path would conflict (e.g. `{orgId}` and `{repoId}`), the original names are preserved.
+**Dynamic route conflict resolution:** When two OpenAPI paths have different parameter names at the same folder level (e.g. `{id}` and `{userId}` both under `/users/`), the codegen builds a path tree across all routes and normalizes them to a single canonical name — preventing the Next.js "different slug names for the same dynamic path" error. The generated `route.ts` always uses the canonical name consistently in both folder structure and `params` references.
 
 Each handler:
 - Reads `Authorization` header from the incoming request and forwards it downstream
@@ -738,27 +824,31 @@ Types are derived from your OpenAPI schemas and support:
 
 ---
 
-### React Query Hooks
+### React Hooks
 
 *Only generated when `framework: 'react'`.*
 
-One `index.ts` per OpenAPI tag, written to `hooksOut`. GET operations become `useQuery` hooks; all mutations (POST, PUT, PATCH, DELETE) become `useMutation` hooks.
+One `index.ts` per OpenAPI tag, written to `hooksOut`. The style depends on `hooksMode`.
 
 ```
 src/hooks/
   users/
-    index.ts        ← useListUsers(), useGetUser(), useCreateUser(), useUpdateUser(), useDeleteUser()
+    index.ts        ← useListUsers(), useGetUser(), useCreateUser(), ...
   products/
     index.ts
 ```
 
-**Example generated output:**
+#### `hooksMode: 'react-query'` (default)
+
+GET operations become `useQuery` hooks; mutations (POST, PUT, PATCH, DELETE) become `useMutation` hooks with automatic cache invalidation.
+
+Requires `@tanstack/react-query` installed in your project.
 
 ```ts
-// Auto-generated by nextjs-openapi-codegen — do not edit manually
+// Auto-generated by codegen-openapi — do not edit manually
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import usersService from '@/services/users';
-import type { ListUsersResponse, GetUserResponse, CreateUserBody } from '@/services/users/types';
+import type { ListUsersResponse, GetUserResponse, CreateUserBody, CreateUserResponse } from '@/services/users/types';
 
 const tag = 'users';
 
@@ -795,9 +885,83 @@ export function useCreateUser() {
 - GET → `useQuery`, `queryKey: [tagSlug, ...pathParams]`
 - Mutations → `useMutation`, `onSuccess` invalidates the tag's queries
 - `enabled: !!param` added automatically when path params are required
-- Hook names: `use` + `PascalCase(methodName)`
 
-> Requires `@tanstack/react-query` installed in your project.
+#### `hooksMode: 'fetch'`
+
+GET operations become `useState` + `useEffect` hooks; mutations return a `mutate` async function. Zero extra dependencies beyond React itself.
+
+```ts
+// Auto-generated by codegen-openapi — do not edit manually
+import { useState, useEffect } from 'react';
+import usersService from '@/services/users';
+import type { ListUsersResponse, GetUserResponse, CreateUserBody, CreateUserResponse } from '@/services/users/types';
+
+/** List all users */
+export function useListUsers() {
+  const [data, setData] = useState<ListUsersResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    usersService.listUsers()
+      .then(res => { if (!cancelled) { setData(res); setLoading(false); } })
+      .catch(e => { if (!cancelled) { setError(e instanceof Error ? e : new Error(String(e))); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, []);
+
+  return { data, loading, error };
+}
+
+/** Get user by id */
+export function useGetUser(id: string) {
+  const [data, setData] = useState<GetUserResponse | null>(null);
+  const [loading, setLoading] = useState(!!id);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    if (!id) { setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    usersService.getUser(id)
+      .then(res => { if (!cancelled) { setData(res); setLoading(false); } })
+      .catch(e => { if (!cancelled) { setError(e instanceof Error ? e : new Error(String(e))); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, [id]);
+
+  return { data, loading, error };
+}
+
+/** Create a new user */
+export function useCreateUser() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const mutate = async (vars: { body: CreateUserBody }): Promise<CreateUserResponse> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await usersService.createUser(vars.body);
+      return result;
+    } catch (e) {
+      const caught = e instanceof Error ? e : new Error(String(e));
+      setError(caught);
+      throw caught;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return { mutate, loading, error };
+}
+```
+
+**Rules:**
+- GET → `useState` + `useEffect`, returns `{ data, loading, error }`
+- Mutations → `mutate` async function, returns `{ mutate, loading, error }`
+- Cancellation via `cancelled` flag prevents state updates on unmounted components
+- `enabled`-equivalent guard: skips fetch if required path params are falsy
 
 ---
 
