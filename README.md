@@ -1,8 +1,8 @@
 # codegen-openapi
 
-A lightning-fast, zero-dependency CLI that generates **Next.js App Router API Route Handlers**, fully typed **Frontend Services**, and **React hooks** directly from any OpenAPI / Swagger specification.
+A lightning-fast, zero-dependency CLI that generates **Next.js API handlers** (App Router or Pages Router), fully typed **Frontend Services**, and **React hooks** directly from any OpenAPI / Swagger specification.
 
-Works with **Next.js** (App Router) and standalone **React** projects.
+Works with **Next.js** (App Router **and** Pages Router) and standalone **React** projects.
 
 Stop writing boilerplate. Connect your APIs in seconds.
 
@@ -40,7 +40,8 @@ Stop writing boilerplate. Connect your APIs in seconds.
   - [fetchBackend](#fetchbackend)
   - [Multiple APIs](#multiple-apis)
 - [What Gets Generated](#what-gets-generated)
-  - [Next.js: Route Handlers](#nextjs-route-handlers)
+  - [Next.js App Router: Route Handlers](#nextjs-app-router-route-handlers)
+  - [Next.js Pages Router: API Handlers](#nextjs-pages-router-api-handlers)
   - [Typed Services](#typed-services)
   - [React Hooks](#react-hooks)
   - [apiClient.ts](#apiclientts)
@@ -53,7 +54,8 @@ Stop writing boilerplate. Connect your APIs in seconds.
 ## Features
 
 - **Zero dependencies** — powered by raw Node.js builtins, no bloated toolchains
-- **Next.js 13+ App Router native** — generates modern `route.ts` handlers with async `context.params` (Next.js 15+ ready)
+- **Next.js App Router** — generates modern `route.ts` handlers with async `context.params` (Next.js 15+ ready)
+- **Next.js Pages Router** — generates `export default function handler` files for legacy Next.js projects (pre-13)
 - **React support** — generates typed services and hooks for standalone React projects
 - **Two hook strategies** — choose `react-query` (useQuery/useMutation with caching) or `fetch` (useState/useEffect with zero extra deps)
 - **End-to-end TypeScript** — types derived directly from your OpenAPI schemas, including `allOf`, `oneOf`, `anyOf`, and nullable support
@@ -158,12 +160,12 @@ npx openapi-gen run --config ./configs/my-api.mjs
 
 **What it asks:**
 
-1. **Framework** — `nextjs` or `react`
+1. **Framework** — `nextjs`, `nextjs-pages`, or `react`
    - *If `react`:* **Hooks library** — `react-query` or `fetch` (asked immediately after)
 2. **API name** — label for CLI output
 3. **OpenAPI spec** — URL or local file path of your first API *(required)*
 4. **Path prefix to strip** — prevents double-nesting like `/api/api/users`
-5. **Backend URL** — env variable name and fallback *(Next.js only)*
+5. **Backend URL** — env variable name and fallback *(Next.js and Pages Router only)*
 6. **JWT cookie name** — leave blank to skip auth entirely
 7. **Generate now?** — run `generate` immediately after saving
 
@@ -268,13 +270,22 @@ npx openapi-gen generate --config ./configs/my-api.mjs
 
 Reads your config and generates all output files. The exact steps depend on `framework`:
 
-**Next.js (`framework: 'nextjs'`):**
+**App Router (`framework: 'nextjs'`):**
 
 1. Validates config — stops with clear errors before touching any file
 2. Generates `apiClient.ts` (unless `apiClient: false`)
 3. Generates `fetchBackend.ts` (unless `fetchBackend: false`)
 4. Fetches the OpenAPI spec
-5. Generates one `route.ts` per API path
+5. Generates one `route.ts` per API path in `src/app/api/`
+6. Generates one service directory per OpenAPI tag
+
+**Pages Router (`framework: 'nextjs-pages'`):**
+
+1. Validates config
+2. Generates `apiClient.ts` (unless `apiClient: false`)
+3. Generates `fetchBackend.ts` (unless `fetchBackend: false`)
+4. Fetches the OpenAPI spec
+5. Generates one handler file per API path in `pages/api/` (e.g. `pages/api/users/[id].ts`)
 6. Generates one service directory per OpenAPI tag
 
 **React (`framework: 'react'`):**
@@ -404,22 +415,25 @@ export default [
 
 | | |
 |---|---|
-| Type | `'nextjs' \| 'react'` |
+| Type | `'nextjs' \| 'nextjs-pages' \| 'react'` |
 | Required | No |
 | Default | `'nextjs'` |
 
 Controls which files are generated:
 
-| | `nextjs` | `react` |
-|---|---|---|
-| `apiClient.ts` | ✅ | ✅ |
-| `fetchBackend.ts` | ✅ | — |
-| `route.ts` per path | ✅ | — |
-| Services per tag | ✅ | ✅ |
-| Hooks per tag | — | ✅ (style set by `hooksMode`) |
+| | `nextjs` | `nextjs-pages` | `react` |
+|---|---|---|---|
+| `apiClient.ts` | ✅ | ✅ | ✅ |
+| `fetchBackend.ts` | ✅ | ✅ | — |
+| `route.ts` per path (App Router) | ✅ | — | — |
+| `handler.ts` per path (Pages Router) | — | ✅ | — |
+| Services per tag | ✅ | ✅ | ✅ |
+| Hooks per tag | — | — | ✅ (style set by `hooksMode`) |
 
 ```js
-framework: 'react'
+framework: 'nextjs'        // App Router — route.ts in src/app/api/
+framework: 'nextjs-pages'  // Pages Router — handler files in pages/api/
+framework: 'react'         // React only — services + hooks, no server proxy
 ```
 
 ---
@@ -464,21 +478,30 @@ spec: './openapi.json'                     // local file (relative to cwd)
 |---|---|
 | Type | `string` |
 | Required | No |
-| Default | `"src/app/api"` |
-| Applies to | `nextjs` only |
+| Default | `"src/app/api"` (App Router) / `"pages/api"` (Pages Router) |
+| Applies to | `nextjs` and `nextjs-pages` |
 
-Directory where generated `route.ts` files are written. Created automatically if it does not exist.
+Directory where generated route/handler files are written. Created automatically if it does not exist.
+
+- **App Router** (`nextjs`): files are written as `{routesOut}/{path}/route.ts`
+- **Pages Router** (`nextjs-pages`): files are written as `{routesOut}/{path}.ts`
 
 ```js
-routesOut: 'src/app/api'
+routesOut: 'src/app/api'  // App Router default
+routesOut: 'pages/api'    // Pages Router default
 ```
 
-> When connecting multiple APIs, use different `routesOut` values to avoid route files from one API overwriting another:
+> When connecting multiple APIs, use different `routesOut` subdirectories to avoid files from one API overwriting another:
 > ```js
-> // core API
+> // core API (App Router)
 > routesOut: 'src/app/api'
 > // payments API
 > routesOut: 'src/app/api/payments'
+>
+> // core API (Pages Router)
+> routesOut: 'pages/api'
+> // payments API
+> routesOut: 'pages/api/payments'
 > ```
 
 ---
@@ -549,9 +572,9 @@ hooksMode: 'fetch'        // zero extra deps, plain React
 | Type | `string` |
 | Required | No |
 | Default | `"API_URL"` |
-| Applies to | `nextjs` only |
+| Applies to | `nextjs` and `nextjs-pages` |
 
-Name of the `process.env` variable that holds the backend base URL. Generated route handlers read this at runtime.
+Name of the `process.env` variable that holds the backend base URL. Generated route/handler files read this at runtime.
 
 ```js
 apiEnvVar: 'CORE_API_URL'
@@ -571,7 +594,7 @@ const API_URL = process.env.CORE_API_URL || '<apiFallback>';
 | Type | `string` |
 | Required | No |
 | Default | `""` |
-| Applies to | `nextjs` only |
+| Applies to | `nextjs` and `nextjs-pages` |
 
 Hardcoded URL used when `apiEnvVar` is not set in the environment. Useful for local development.
 
@@ -676,7 +699,7 @@ apiClient: false
 | Type | `false \| object` |
 | Required | No |
 | Default | `{}` (generates with defaults) |
-| Applies to | `nextjs` only |
+| Applies to | `nextjs` and `nextjs-pages` |
 
 Controls generation of `fetchBackend.ts`. Set to `false` to skip this file entirely.
 
@@ -772,7 +795,7 @@ export default [
 
 ## What Gets Generated
 
-### Next.js: Route Handlers
+### Next.js App Router: Route Handlers
 
 One `route.ts` file per OpenAPI path, written to `routesOut`. Each file acts as a typed HTTP proxy to your backend — handling path params, query strings, JSON bodies, and `multipart/form-data`.
 
@@ -788,7 +811,7 @@ src/app/api/
       route.ts
 ```
 
-**Dynamic route conflict resolution:** When two OpenAPI paths have different parameter names at the same folder level (e.g. `{id}` and `{userId}` both under `/users/`), the codegen builds a path tree across all routes and normalizes them to a single canonical name — preventing the Next.js "different slug names for the same dynamic path" error. The generated `route.ts` always uses the canonical name consistently in both folder structure and `params` references.
+**Dynamic route conflict resolution:** When two OpenAPI paths have different parameter names at the same folder level (e.g. `{id}` and `{userId}` both under `/users/`), the codegen builds a path tree across all routes and normalizes them to a single canonical name — preventing the Next.js "different slug names for the same dynamic path" error.
 
 Each handler:
 - Reads `Authorization` header from the incoming request and forwards it downstream
@@ -796,6 +819,67 @@ Each handler:
 - Handles `application/json` and `multipart/form-data` request bodies
 - Returns structured `{ success: false, message }` on backend errors
 - Catches all exceptions and returns `500` with a safe error message
+
+---
+
+### Next.js Pages Router: API Handlers
+
+One `.ts` handler file per OpenAPI path, written to `routesOut` (default: `pages/api`). Uses the `export default function handler` pattern compatible with Next.js Pages Router (pre-13 or mixed projects).
+
+```
+pages/api/
+  users.ts              ← GET /users, POST /users
+  users/
+    [id].ts             ← GET /users/{id}, PUT /users/{id}, DELETE /users/{id}
+  products.ts
+  products/
+    [id].ts
+```
+
+The key difference from App Router: the last path segment becomes the **filename** (not a directory). All HTTP methods for a given path are handled inside a single `switch`/`if` on `req.method`.
+
+```ts
+// Auto-generated by codegen-openapi — do not edit manually
+import type { NextApiRequest, NextApiResponse } from 'next';
+import { fetchBackend } from '@/lib/fetchBackend';
+
+// GET /users/{id} — Get user by ID
+// PUT /users/{id} — Update user
+// DELETE /users/{id} — Delete user
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  try {
+    const authHeader = req.headers.authorization as string | undefined;
+    const headers: Record<string, string> = {};
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+
+    const { id } = req.query as { id: string };
+
+    if (req.method === 'GET') {
+      const API_URL = process.env.API_URL || 'https://api.example.com';
+      const url = `${API_URL}/users/${id}`;
+      const response = await fetchBackend(url, { method: 'GET', headers });
+      // ... response parsing
+      return res.status(response.status).json(data);
+    }
+
+    if (req.method === 'DELETE') {
+      // ...
+    }
+
+    res.status(405).json({ success: false, message: 'Method Not Allowed' });
+  } catch (error) {
+    console.error('[handler]', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+}
+```
+
+Same dynamic route conflict resolution applies — param names are normalized consistently across all paths.
+
+Same auth/query/body handling as App Router, adapted for the `req`/`res` API.
 
 ---
 
@@ -979,9 +1063,9 @@ A pre-configured Axios instance for use in **browser/client components**:
 
 ### `fetchBackend.ts`
 
-Generated at `fetchBackend.outputPath` (default: `src/lib/fetchBackend.ts`). **Next.js only.**
+Generated at `fetchBackend.outputPath` (default: `src/lib/fetchBackend.ts`). **Next.js (App Router and Pages Router) only.**
 
-A server-side HTTP helper for use **inside route handlers** (server-only):
+A server-side HTTP helper for use **inside route/API handlers** (server-only):
 
 - Reads the JWT from `next/headers` cookies (works in Server Components and Route Handlers)
 - Propagates the token to outgoing backend requests as `Authorization: Bearer <token>`

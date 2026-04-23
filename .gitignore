@@ -37,3 +37,5 @@ coverage/
 
 # Typescript
 *.tsbuildinfo
+
+ROADMAP.md

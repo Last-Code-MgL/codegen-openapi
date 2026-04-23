@@ -7,6 +7,7 @@
 
 // ─── Generators ───────────────────────────────────────────────────────────────
 export { generateRoutes } from './generateRoutes.js';
+export { generateRoutesPages } from './generateRoutesPages.js';
 export { generateServices } from './generateServices.js';
 export { generateApiClient } from './generateApiClient.js';
 export { generateFetchBackend } from './generateFetchBackend.js';
@@ -30,6 +31,9 @@ export {
 } from './utils.js';
 export type { PathTreeNode } from './utils.js';
 
+// Pages Router helper (re-exported from generator for CLI diff use)
+export { nextPathToPageFilePath } from './generateRoutesPages.js';
+
 // ─── Public Types ───────────────────────────────────────────────────────────
 export type { GenerateApiClientOptions } from './generateApiClient.js';
 export type { GenerateFetchBackendOptions } from './generateFetchBackend.js';
@@ -41,11 +45,12 @@ export interface CodegenConfig {
 
   /**
    * Target framework for code generation.
-   * - 'nextjs': generates routes, services, apiClient, fetchBackend
-   * - 'react': generates services, hooks (React Query), apiClient only
+   * - 'nextjs':       generates App Router route handlers, services, apiClient, fetchBackend
+   * - 'nextjs-pages': generates Pages Router API handlers, services, apiClient, fetchBackend
+   * - 'react':        generates services, hooks (React Query), apiClient only
    * @default 'nextjs'
    */
-  framework?: 'nextjs' | 'react';
+  framework?: 'nextjs' | 'nextjs-pages' | 'react';
 
   /**
    * Output directory where the hooks are generated.
