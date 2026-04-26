@@ -843,7 +843,7 @@ async function runGenerate(configPath) {
     // 5. Services — both frameworks
     try {
       const serviceFiles = await generateServices({
-        spec: parsedSpec, stripPathPrefix, servicesOut, apiClientPath, cwd,
+        spec: parsedSpec, stripPathPrefix, servicesOut, apiClientPath, routesOut, framework, cwd,
       });
       totalServices += serviceFiles.length;
       console.log(`  ${ok(`${serviceFiles.length} service file(s)   →  ${servicesOut}/`)}`);
