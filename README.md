@@ -491,17 +491,22 @@ routesOut: 'src/app/api'  // App Router default
 routesOut: 'pages/api'    // Pages Router default
 ```
 
+**Service URL derivation:** the generated services automatically use `routesOut` to build the correct URL when calling the Next.js proxy routes. You do not need to configure anything extra — if your routes live at `src/app/api/core`, the services will call `/api/core/...`.
+
+| `routesOut` | Generated service URL prefix |
+|---|---|
+| `src/app/api` | `/api` |
+| `src/app/api/core` | `/api/core` |
+| `src/app/api/payments` | `/api/payments` |
+| `pages/api` | `/api` |
+| `pages/api/payments` | `/api/payments` |
+
 > When connecting multiple APIs, use different `routesOut` subdirectories to avoid files from one API overwriting another:
 > ```js
-> // core API (App Router)
-> routesOut: 'src/app/api'
-> // payments API
+> // core API — routes at /api/core/..., services call /api/core/...
+> routesOut: 'src/app/api/core'
+> // payments API — routes at /api/payments/..., services call /api/payments/...
 > routesOut: 'src/app/api/payments'
->
-> // core API (Pages Router)
-> routesOut: 'pages/api'
-> // payments API
-> routesOut: 'pages/api/payments'
 > ```
 
 ---
@@ -725,7 +730,7 @@ fetchBackend: false
 
 Pass multiple objects in the array to manage several APIs in one project. Each entry runs independently. The first entry generates the shared `apiClient.ts` and `fetchBackend.ts`; subsequent entries set those to `false` to reuse them.
 
-**Important:** When multiple Next.js APIs share the same `routesOut`, route files from different APIs can overwrite each other if they have overlapping paths. Use distinct subdirectories:
+**Important:** each API must have its own `routesOut` subdirectory. This prevents route files from different APIs overwriting each other, and also ensures the generated services call the correct URL prefix automatically:
 
 ```js
 /** @type {import('codegen-openapi').CodegenConfig[]} */
@@ -734,8 +739,8 @@ export default [
     name:        'core',
     framework:   'nextjs',
     spec:        'https://api.example.com/api-json',
-    routesOut:   'src/app/api',           // ← core owns the root
-    servicesOut: 'src/services',
+    routesOut:   'src/app/api/core',      // routes: /api/core/..., services call /api/core/...
+    servicesOut: 'src/services/core',
     apiEnvVar:   'CORE_API_URL',
     apiFallback: 'https://api.example.com',
     stripPathPrefix: '/api',
@@ -753,7 +758,7 @@ export default [
     name:        'payments',
     framework:   'nextjs',
     spec:        'https://payments.example.com/api-json',
-    routesOut:   'src/app/api/payments',  // ← dedicated subfolder
+    routesOut:   'src/app/api/payments',  // routes: /api/payments/..., services call /api/payments/...
     servicesOut: 'src/services/payments',
     apiEnvVar:   'PAYMENTS_API_URL',
     apiFallback: 'https://payments.example.com',
