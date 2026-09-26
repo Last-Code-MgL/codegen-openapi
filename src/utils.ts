@@ -273,14 +273,70 @@ export function assignOperationNames(operations: any[], spec: any): OperationNam
 
 // ─── Spec fetching ───────────────────────────────────────────────────────────────
 
+/**
+ * Loads an OpenAPI 3 JSON spec from a URL or a local file.
+ * Errors explain the usual mistakes (Swagger UI page instead of the JSON, YAML, Swagger 2.0,
+ * backend not running) instead of surfacing a raw JSON parse error.
+ */
 export async function fetchSpec(pathOrUrl: string) {
-  if (pathOrUrl.startsWith('http')) {
-    const res = await fetch(pathOrUrl);
-    if (!res.ok) throw new Error(`Failed to fetch spec: ${pathOrUrl} (${res.status})`);
-    return res.json();
+  let text: string;
+
+  if (/^https?:\/\//i.test(pathOrUrl)) {
+    let res: Response;
+    try {
+      res = await fetch(pathOrUrl);
+    } catch (e: any) {
+      const code = e?.cause?.code;
+      const hint = code === 'ECONNREFUSED'
+        ? ' — nothing is listening there. Is the backend running?'
+        : code === 'ENOTFOUND' ? ' — the host name could not be resolved.' : '';
+      throw new Error(`Could not reach ${pathOrUrl}${hint}${hint ? '' : ` (${e?.cause?.message ?? e?.message})`}`);
+    }
+    if (!res.ok) {
+      throw new Error(`${pathOrUrl} responded ${res.status} ${res.statusText}.${res.status === 401 || res.status === 403
+        ? ' The spec endpoint requires authentication — save the JSON to a file and point "spec" to it.'
+        : ''}`);
+    }
+    text = await res.text();
+  } else {
+    const { readFileSync, existsSync } = await import('fs');
+    const { resolve } = await import('path');
+    const absolute = resolve(pathOrUrl);
+    if (!existsSync(absolute)) throw new Error(`Spec file not found: ${pathOrUrl} (looked in ${absolute})`);
+    text = readFileSync(absolute, 'utf-8');
   }
-  const { readFileSync } = await import('fs');
-  return JSON.parse(readFileSync(pathOrUrl, 'utf-8'));
+
+  return parseSpec(text, pathOrUrl);
+}
+
+/** Parses spec text, turning common mistakes into actionable errors. */
+export function parseSpec(text: string, source = 'spec') {
+  const trimmed = text.trimStart().replace(/^﻿/, '');
+
+  if (trimmed.startsWith('<')) {
+    throw new Error(
+      `${source} returned HTML, not JSON — this is probably the Swagger UI page. ` +
+      'Use the JSON endpoint instead (NestJS: /api-json, FastAPI: /openapi.json, Springdoc: /v3/api-docs).',
+    );
+  }
+
+  let spec: any;
+  try {
+    spec = JSON.parse(trimmed);
+  } catch (e: any) {
+    if (/^(openapi|swagger)\s*:/m.test(trimmed)) {
+      throw new Error(`${source} is YAML. Only JSON specs are supported — convert it (e.g. npx js-yaml spec.yaml > spec.json).`);
+    }
+    throw new Error(`${source} is not valid JSON: ${e.message}`);
+  }
+
+  if (spec?.swagger) {
+    throw new Error(`${source} is Swagger ${spec.swagger}. Only OpenAPI 3.x is supported — most frameworks can export OpenAPI 3, or convert it with swagger2openapi.`);
+  }
+  if (!spec || typeof spec !== 'object' || !spec.paths) {
+    throw new Error(`${source} doesn't look like an OpenAPI spec (no "paths" object).`);
+  }
+  return spec;
 }
 
 // ─── Safe schema helpers ──────────────────────────────────────────────────────

@@ -150,3 +150,9 @@ export interface CodegenConfig {
     timeout?: number;
   };
 }
+
+// ─── Planning & config file helpers (used by the CLI) ──────────────────────────
+export { planOutputFiles, GENERATED_HEADER } from './plan.js';
+export type { PlannedFiles } from './plan.js';
+export { parseSpec } from './utils.js';
+export { appendConfigEntry, renderConfigEntry } from './configFile.js';
