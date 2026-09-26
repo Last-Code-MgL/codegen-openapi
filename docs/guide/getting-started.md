@@ -16,7 +16,7 @@
 npm install --save-dev codegen-openapi
 ```
 
-The CLI itself has no runtime dependencies. The **generated code** imports a few libraries, which you install in your app:
+The CLI itself has no runtime dependencies. The **generated code** imports a few libraries, which you install in your app — `generate` checks your `package.json` and prints the exact install command for anything missing:
 
 | Package | Needed when |
 |---|---|

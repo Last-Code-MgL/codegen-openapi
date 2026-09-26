@@ -16,7 +16,7 @@ O `codegen-openapi` lê uma spec OpenAPI e escreve o código que o seu frontend 
 npm install --save-dev codegen-openapi
 ```
 
-O CLI não tem dependências em runtime. O **código gerado** importa algumas bibliotecas, que você instala no seu app:
+O CLI não tem dependências em runtime. O **código gerado** importa algumas bibliotecas, que você instala no seu app — o `generate` confere o seu `package.json` e mostra o comando exato para instalar o que estiver faltando:
 
 | Pacote | Quando é necessário |
 |---|---|

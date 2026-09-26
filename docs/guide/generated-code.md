@@ -2,13 +2,41 @@
 
 ## Route handlers (Next.js)
 
-One file per API path, acting as a proxy from your Next.js app to the backend. Each handler:
+One file per API path, acting as a transparent proxy from your Next.js app to the backend. Each handler:
 
-- forwards the incoming `Authorization` header (and, with `cookieName`, the JWT cookie)
-- forwards query strings and path params
-- forwards JSON bodies as-is (empty/optional bodies are fine) and `multipart/form-data` uploads
-- returns `204`/`205`/`304` responses without a body
-- returns `{ success: false, message }` with the backend status on errors, and `500` on exceptions
+- forwards the method, query string (repeated keys included), path params (URL-encoded) and the **raw body** — JSON, `multipart/form-data` uploads, binary; empty bodies are fine
+- forwards the `Authorization`, `Content-Type`, `Accept` and `Accept-Language` headers, and with `cookieName` turns the JWT cookie into `Authorization: Bearer <token>` when the client didn't send one
+- returns the backend response **as-is**: status, headers, every `Set-Cookie`, and the body — JSON, files, text (`204`/`205`/`304` without a body)
+- keeps backend error responses intact (e.g. a `422` with validation details), and returns `500 { success: false, message }` only if the backend can't be reached
+
+The generated files are small — the proxy logic lives in [`fetchBackend.ts`](#fetchbackend-ts):
+
+```ts
+// src/app/api/users/[id]/route.ts
+import { fetchBackend, forwardHeaders, readBody, toResponse } from '../../../../lib/fetchBackend';
+
+async function proxy(request: Request, context: any) {
+  try {
+    const API_URL = process.env.API_URL || '';
+    const params = await context.params;
+    const { search } = new URL(request.url);
+
+    const response = await fetchBackend(`${API_URL}/users/${encodeURIComponent(params.id)}${search}`, {
+      method: request.method,
+      headers: await forwardHeaders(request),
+      body: request.method === 'GET' ? undefined : await readBody(request),
+    });
+    return toResponse(response);
+  } catch (error) {
+    console.error(`[${request.method} /users/{id}]`, error);
+    return Response.json({ success: false, message: 'Internal Server Error' }, { status: 500 });
+  }
+}
+
+export const GET = proxy;
+export const PATCH = proxy;
+export const DELETE = proxy;
+```
 
 **App Router** (`framework: 'nextjs'`) — one `route.ts` per path:
 
@@ -29,7 +57,7 @@ pages/api/
     [id].ts           ← GET, PATCH, DELETE /users/{id}
 ```
 
-Files with a multipart endpoint export `config = { api: { bodyParser: false } }` and stream the raw body to the backend.
+Every API route exports `config = { api: { bodyParser: false } }` so the body reaches the backend untouched, and answers `405` with an `Allow` header for methods the spec doesn't define.
 
 ::: tip Path parameter names
 Next.js requires the same slug name at the same folder level. If your spec has `/users/{id}` and `/users/{userId}/posts`, both use the first name found (`[id]`), and services/hooks use that same name.
@@ -127,8 +155,13 @@ A browser Axios instance (default `src/lib/apiClient.ts`) used by the services:
 
 ## `fetchBackend.ts`
 
-A server-only helper (default `src/lib/fetchBackend.ts`) used by the route handlers:
+A server-only helper (default `src/lib/fetchBackend.ts`) with the proxy logic the route handlers use:
 
-- App Router with `cookieName`: reads the cookie via `next/headers` and adds `Authorization: Bearer <token>` when the request has none (Pages Router handlers forward `req.cookies` instead)
+- `fetchBackend(url, { method, headers, body })` — calls the backend and returns a fetch-like response that keeps the raw bytes (`json()`, `text()`, `arrayBuffer()`, `headers.getSetCookie()`)
+- `forwardHeaders(request)` — the client headers passed on to the backend, plus the JWT cookie as a Bearer token when `cookieName` is set (via `next/headers` in the App Router, `req.cookies` in the Pages Router)
+- `readBody(request)` — the incoming body, untouched
+- `toResponse(response)` (App Router) / `sendResponse(res, response)` (Pages Router) — sends the backend response back with its status, headers and `Set-Cookie`
 - timeout via `fetchBackend.timeout` (default 15s)
 - set `BACKEND_IGNORE_SSL=true` to accept self-signed certificates in development
+
+You can also call `fetchBackend` from Server Components or your own route handlers.

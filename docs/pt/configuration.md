@@ -163,7 +163,9 @@ Os route handlers importam o arquivo por caminho relativo ao `outputPath`.
 
 ## Várias APIs
 
-Adicione uma entrada por API. Dê a cada API a sua própria subpasta em `routesOut`, para que os arquivos não se sobrescrevam, e defina `apiClient` / `fetchBackend` como `false` nas entradas extras — elas reaproveitam os helpers gerados pela primeira (o `openapi-gen add` já faz isso).
+Adicione uma entrada por API — o [`openapi-gen add`](./guide/commands#add) faz isso por você. Dê a cada API a sua própria subpasta em `routesOut` / `servicesOut` e defina `apiClient` / `fetchBackend` como `false` nas entradas extras, para reaproveitarem os helpers gerados pela primeira.
+
+Se duas entradas fossem escrever o mesmo arquivo, o `generate` para antes de escrever qualquer coisa e lista os arquivos em conflito. Os nomes das entradas precisam ser únicos.
 
 ```js
 export default [

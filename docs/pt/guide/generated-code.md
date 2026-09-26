@@ -2,13 +2,41 @@
 
 ## Route handlers (Next.js)
 
-Um arquivo por rota da API, funcionando como proxy do seu app Next.js para o backend. Cada handler:
+Um arquivo por rota da API, funcionando como proxy transparente do seu app Next.js para o backend. Cada handler:
 
-- repassa o header `Authorization` recebido (e, com `cookieName`, o cookie JWT)
-- repassa query strings e path params
-- repassa bodies JSON sem alteração (bodies vazios/opcionais funcionam) e uploads `multipart/form-data`
-- devolve respostas `204`/`205`/`304` sem body
-- em erro, devolve `{ success: false, message }` com o status do backend, e `500` em exceções
+- repassa o método, a query string (inclusive chaves repetidas), os path params (codificados na URL) e o **body cru** — JSON, uploads `multipart/form-data`, binário; bodies vazios funcionam
+- repassa os headers `Authorization`, `Content-Type`, `Accept` e `Accept-Language` e, com `cookieName`, transforma o cookie JWT em `Authorization: Bearer <token>` quando o cliente não mandou um
+- devolve a resposta do backend **sem alteração**: status, headers, todos os `Set-Cookie` e o body — JSON, arquivos, texto (`204`/`205`/`304` sem body)
+- mantém as respostas de erro do backend intactas (ex.: um `422` com os detalhes de validação), e só devolve `500 { success: false, message }` se o backend não puder ser acessado
+
+Os arquivos gerados são pequenos — a lógica de proxy fica no [`fetchBackend.ts`](#fetchbackend-ts):
+
+```ts
+// src/app/api/users/[id]/route.ts
+import { fetchBackend, forwardHeaders, readBody, toResponse } from '../../../../lib/fetchBackend';
+
+async function proxy(request: Request, context: any) {
+  try {
+    const API_URL = process.env.API_URL || '';
+    const params = await context.params;
+    const { search } = new URL(request.url);
+
+    const response = await fetchBackend(`${API_URL}/users/${encodeURIComponent(params.id)}${search}`, {
+      method: request.method,
+      headers: await forwardHeaders(request),
+      body: request.method === 'GET' ? undefined : await readBody(request),
+    });
+    return toResponse(response);
+  } catch (error) {
+    console.error(`[${request.method} /users/{id}]`, error);
+    return Response.json({ success: false, message: 'Internal Server Error' }, { status: 500 });
+  }
+}
+
+export const GET = proxy;
+export const PATCH = proxy;
+export const DELETE = proxy;
+```
 
 **App Router** (`framework: 'nextjs'`) — um `route.ts` por rota:
 
@@ -29,7 +57,7 @@ pages/api/
     [id].ts           ← GET, PATCH, DELETE /users/{id}
 ```
 
-Arquivos com endpoint multipart exportam `config = { api: { bodyParser: false } }` e repassam o body cru para o backend.
+Toda API route exporta `config = { api: { bodyParser: false } }` para o body chegar ao backend sem alteração, e responde `405` com o header `Allow` para métodos que a spec não define.
 
 ::: tip Nomes dos path params
 O Next.js exige o mesmo nome de slug no mesmo nível de pasta. Se a sua spec tem `/users/{id}` e `/users/{userId}/posts`, os dois usam o primeiro nome encontrado (`[id]`), e services/hooks usam esse mesmo nome.
@@ -127,8 +155,13 @@ O `js-cookie` só consegue ler cookies que **não** são `httpOnly`. No Next.js 
 
 ## `fetchBackend.ts`
 
-Um helper só de servidor (padrão `src/lib/fetchBackend.ts`) usado pelos route handlers:
+Um helper só de servidor (padrão `src/lib/fetchBackend.ts`) com a lógica de proxy que os route handlers usam:
 
-- App Router com `cookieName`: lê o cookie via `next/headers` e adiciona `Authorization: Bearer <token>` quando a requisição não tem um (no Pages Router os handlers repassam `req.cookies`)
+- `fetchBackend(url, { method, headers, body })` — chama o backend e devolve uma resposta no estilo do `fetch` que mantém os bytes crus (`json()`, `text()`, `arrayBuffer()`, `headers.getSetCookie()`)
+- `forwardHeaders(request)` — os headers do cliente repassados ao backend, mais o cookie JWT como Bearer token quando `cookieName` está definido (via `next/headers` no App Router, `req.cookies` no Pages Router)
+- `readBody(request)` — o body recebido, sem alteração
+- `toResponse(response)` (App Router) / `sendResponse(res, response)` (Pages Router) — devolve a resposta do backend com status, headers e `Set-Cookie`
 - timeout via `fetchBackend.timeout` (padrão 15s)
 - defina `BACKEND_IGNORE_SSL=true` para aceitar certificados autoassinados em desenvolvimento
+
+Você também pode chamar o `fetchBackend` em Server Components ou nos seus próprios route handlers.
