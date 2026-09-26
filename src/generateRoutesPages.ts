@@ -10,21 +10,22 @@ import {
   relativeImport,
   stringLiteral,
 } from './utils.js';
-import { buildBackendPath } from './generateRoutes.js';
+import { buildBackendPath, escapeTemplate } from './generateRoutes.js';
 
 /**
  * Renders one Pages Router API route. Every method of a path shares the same backend URL, so the
  * handler forwards the request untouched (method, headers, raw body, query string) and sends the
  * backend response back as-is (status, headers, Set-Cookie, JSON or binary body).
  */
-function renderPagesHandler({ operations, apiEnvVar, apiFallback, fetchBackendImport }: any) {
+function renderPagesHandler({ operations, apiEnvVar, apiFallback, fetchBackendImport, backendPrefix = '' }: any) {
   const summaries = operations
     .map((op: any) => `// ${op.method} ${op.path}${op.summary ? ` — ${lineComment(op.summary)}` : ''}`)
     .join('\n');
 
   const [first] = operations;
   const paramNames: string[] = first.pathParams.map((p: string) => first.paramMap[p] ?? p);
-  const backendPath = buildBackendPath(first.path, first.paramMap, 'params');
+  // backendPrefix: the part of the spec path removed by stripPathPrefix, when the backend expects the full path
+  const backendPath = escapeTemplate(backendPrefix) + buildBackendPath(first.path, first.paramMap, 'params');
   const methods: string[] = [...new Set<string>(operations.map((op: any) => op.method))];
 
   const paramsLine = paramNames.length
@@ -103,6 +104,7 @@ export async function generateRoutesPages({
   routesOut,
   fetchBackendPath,
   fetchBackendFile = 'src/lib/fetchBackend.ts',
+  backendPrefix = '',
   cwd,
 }: any) {
   const parsed = typeof spec === 'string' ? await fetchSpec(spec) : spec;
@@ -111,7 +113,7 @@ export async function generateRoutesPages({
   for (const [relativePath, ops] of planRoutesPages({ spec: parsed, stripPathPrefix, routesOut })) {
     // An explicit fetchBackendPath wins (e.g. '@/lib/fetchBackend'); otherwise import relatively
     const fetchBackendImport = fetchBackendPath ?? relativeImport(dirname(relativePath), fetchBackendFile);
-    const content = renderPagesHandler({ operations: ops, apiEnvVar, apiFallback, fetchBackendImport });
+    const content = renderPagesHandler({ operations: ops, apiEnvVar, apiFallback, fetchBackendImport, backendPrefix });
 
     const absolutePath = join(cwd, relativePath);
     mkdirSync(dirname(absolutePath), { recursive: true });

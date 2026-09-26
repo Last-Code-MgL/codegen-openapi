@@ -22,3 +22,6 @@ declare module 'next' {
     json(body: T): void;
   }
 }
+
+// Vite projects type import.meta.env through vite/client
+interface ImportMeta { readonly env: Record<string, string | undefined> }

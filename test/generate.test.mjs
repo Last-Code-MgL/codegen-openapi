@@ -3,11 +3,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync, writeFileSync, readFileSync, copyFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 
 import {
   generateRoutes,
@@ -18,40 +17,18 @@ import {
   generateFetchBackend,
   extractOperations,
 } from '../dist/index.js';
+import { typecheck } from './helpers.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 const tmpRoot = join(here, '.tmp');
 const spec = JSON.parse(readFileSync(join(here, 'fixtures/edge-cases.json'), 'utf-8'));
-const tscBin = createRequire(import.meta.url).resolve('typescript/bin/tsc');
 
 function freshDir(name) {
   const dir = join(tmpRoot, name);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   return dir;
-}
-
-function typecheck(dir) {
-  copyFileSync(join(here, 'stubs.d.ts'), join(dir, 'stubs.d.ts'));
-  writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({
-    compilerOptions: {
-      target: 'ES2022',
-      lib: ['ES2022', 'DOM'],
-      module: 'ESNext',
-      moduleResolution: 'Bundler',
-      strict: true,
-      noEmit: true,
-      esModuleInterop: true,
-      skipLibCheck: true,
-      types: ['node'],
-      baseUrl: '.',
-      paths: { '@/*': ['src/*'] },
-    },
-    include: ['**/*.ts'],
-  }, null, 2));
-  const r = spawnSync(process.execPath, [tscBin, '-p', dir], { encoding: 'utf-8', cwd: root });
-  assert.equal(r.status, 0, `tsc failed:\n${r.stdout}${r.stderr}`);
 }
 
 const read = (dir, rel) => readFileSync(join(dir, rel), 'utf-8');

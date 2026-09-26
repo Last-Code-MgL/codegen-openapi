@@ -34,7 +34,8 @@
     "typecheck": "tsc --noEmit",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "lockfile": "npx -y npm@10 install"
   },
   "peerDependencies": {
     "@tanstack/react-query": ">=4.0.0"
@@ -53,7 +54,8 @@
     "esbuild": "^0.28.2",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
-    "vitepress": "^1.6.4"
+    "vitepress": "^1.6.4",
+    "yaml": "^2.9.1"
   },
   "keywords": [
     "nextjs",

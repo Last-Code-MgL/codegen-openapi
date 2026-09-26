@@ -156,3 +156,16 @@ export { planOutputFiles, GENERATED_HEADER } from './plan.js';
 export type { PlannedFiles } from './plan.js';
 export { parseSpec } from './utils.js';
 export { appendConfigEntry, renderConfigEntry } from './configFile.js';
+export { appendApiToConfig } from './configFile.js';
+
+// ─── Config format (current: `{ apis: { ... } }`) ──────────────────────────────
+export {
+  defineConfig,
+  normalizeConfig,
+  isApisConfig,
+  resolveWithSpec,
+  suggestStripPrefix,
+  suggestBaseUrl,
+  filterSpec,
+} from './config.js';
+export type { Config, ApiConfig, AuthConfig, OperationFilter, Framework, ResolvedApi, NormalizedConfig } from './config.js';
