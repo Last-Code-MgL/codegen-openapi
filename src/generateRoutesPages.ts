@@ -10,150 +10,57 @@ import {
   relativeImport,
   stringLiteral,
 } from './utils.js';
+import { buildBackendPath } from './generateRoutes.js';
 
-function buildBackendUrl(path: string, paramMap: Record<string, string>) {
-  const withParams = path.replace(/\{(\w+)\}/g, (_, p) => `\${${paramMap[p] ?? p}}`);
-  return `\`\${API_URL}${withParams}\``;
-}
-
-function renderMethodBlock(op: any, { apiEnvVar, apiFallback }: any, rawBody: boolean) {
-  const { method, path, hasBody, hasQueryParams, summary, paramMap } = op;
-
-  const lines: string[] = [];
-  if (summary) lines.push(`  // ${lineComment(summary)}`);
-  lines.push(`  if (req.method === '${method}') {`);
-  lines.push(`    const API_URL = process.env.${apiEnvVar} || '${apiFallback}';`);
-  lines.push('');
-
-  const backendUrl = buildBackendUrl(path, paramMap);
-  if (hasQueryParams) {
-    lines.push(`    const qs = new URLSearchParams(queryRest as Record<string, string>).toString();`);
-    lines.push(`    const url = qs ? \`${backendUrl.slice(1, -1)}?\${qs}\` : ${backendUrl};`);
-  } else {
-    lines.push(`    const url = ${backendUrl};`);
-  }
-  lines.push('');
-
-  const fetchOpts: string[] = [`method: '${method}'`, 'headers'];
-  if (hasBody && rawBody) {
-    // bodyParser is disabled for this file (multipart): forward the raw bytes with the original
-    // Content-Type so the multipart boundary is preserved
-    lines.push(`    const body = await readRawBody(req);`);
-    lines.push(`    if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];`);
-    fetchOpts.push('body: body.length ? body : undefined');
-  } else if (hasBody) {
-    lines.push(`    const hasBody = req.body !== undefined && req.body !== '';`);
-    lines.push(`    if (hasBody) headers['Content-Type'] = 'application/json';`);
-    fetchOpts.push(`body: hasBody ? JSON.stringify(req.body) : undefined`);
-  }
-
-  lines.push(`    const response = await fetchBackend(url, { ${fetchOpts.join(', ')} });`);
-  lines.push('');
-  lines.push(`    if (response.status === 204 || response.status === 205 || response.status === 304) {`);
-  lines.push(`      return res.status(response.status).end();`);
-  lines.push(`    }`);
-  lines.push('');
-  lines.push(`    let data: any;`);
-  lines.push(`    const contentType = response.headers.get('content-type') ?? '';`);
-  lines.push(`    if (contentType.includes('application/json')) {`);
-  lines.push(`      data = await response.json();`);
-  lines.push(`    } else {`);
-  lines.push(`      data = await response.text();`);
-  lines.push(`    }`);
-  lines.push('');
-  lines.push(`    if (!response.ok) {`);
-  lines.push(`      return res.status(response.status).json({ success: false, message: data?.message ?? 'Request encountered an error' });`);
-  lines.push(`    }`);
-  lines.push(`    return res.status(response.status).json(data);`);
-  lines.push(`  }`);
-
-  return lines.join('\n');
-}
-
-function renderPagesHandler({ operations, apiEnvVar, apiFallback, fetchBackendImport, cookieName }: any) {
+/**
+ * Renders one Pages Router API route. Every method of a path shares the same backend URL, so the
+ * handler forwards the request untouched (method, headers, raw body, query string) and sends the
+ * backend response back as-is (status, headers, Set-Cookie, JSON or binary body).
+ */
+function renderPagesHandler({ operations, apiEnvVar, apiFallback, fetchBackendImport }: any) {
   const summaries = operations
     .map((op: any) => `// ${op.method} ${op.path}${op.summary ? ` — ${lineComment(op.summary)}` : ''}`)
     .join('\n');
 
-  // Collect unique canonical path param names across all ops in this file
-  const fileParamNames: string[] = [];
-  const seen = new Set<string>();
-  for (const op of operations) {
-    for (const p of op.pathParams) {
-      const canonical = op.paramMap[p] ?? p;
-      if (!seen.has(canonical)) {
-        seen.add(canonical);
-        fileParamNames.push(canonical);
-      }
-    }
-  }
+  const [first] = operations;
+  const paramNames: string[] = first.pathParams.map((p: string) => first.paramMap[p] ?? p);
+  const backendPath = buildBackendPath(first.path, first.paramMap, 'params');
+  const methods: string[] = [...new Set<string>(operations.map((op: any) => op.method))];
 
-  const hasFileQueryParams = operations.some((op: any) => op.hasQueryParams);
-
-  // Next's bodyParser can't parse multipart; disable it for the whole file and stream bodies through
-  const rawBody = operations.some((op: any) => op.hasBody && op.bodyContentType === 'multipart/form-data');
-
-  // Build destructuring line at the top of handler
-  let queryDestructure = '';
-  if (fileParamNames.length > 0 && hasFileQueryParams) {
-    const typeEntries = fileParamNames.map((p) => `${p}: string`).join('; ');
-    queryDestructure = `    const { ${fileParamNames.join(', ')}, ...queryRest } = req.query as { ${typeEntries}; [key: string]: string | string[] };\n`;
-  } else if (fileParamNames.length > 0) {
-    const typeEntries = fileParamNames.map((p) => `${p}: string`).join('; ');
-    queryDestructure = `    const { ${fileParamNames.join(', ')} } = req.query as { ${typeEntries} };\n`;
-  } else if (hasFileQueryParams) {
-    queryDestructure = `    const queryRest = req.query as Record<string, string>;\n`;
-  }
-
-  const methodBlocks = operations
-    .map((op: any) => renderMethodBlock(op, { apiEnvVar, apiFallback }, rawBody))
-    .join('\n\n')
-    .replace(/^(?=.)/gm, '  ');
-
-  // next/headers cookies() only works in the App Router, so the Pages handler forwards the cookie itself
-  const cookieBlock = cookieName
-    ? `
-    const token = req.cookies?.[${stringLiteral(cookieName)}];
-    if (!authHeader && token) {
-      headers['Authorization'] = \`Bearer \${token}\`;
-    }`
-    : '';
-
-  const rawBodyHelpers = rawBody
-    ? `
-export const config = { api: { bodyParser: false } };
-
-function readRawBody(req: NextApiRequest): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
-}
-`
+  const paramsLine = paramNames.length
+    ? `\n    const params = req.query as { ${paramNames.map((p) => `${p}: string`).join('; ')} };`
     : '';
 
   return `// Auto-generated by codegen-openapi — do not edit manually
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { fetchBackend } from '${fetchBackendImport}';
+import { fetchBackend, forwardHeaders, readBody, sendResponse } from '${fetchBackendImport}';
 
 ${summaries}
-${rawBodyHelpers}
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  try {
-    const authHeader = req.headers.authorization as string | undefined;
-    const headers: Record<string, string> = {};
-    if (authHeader) {
-      headers['Authorization'] = authHeader;
-    }${cookieBlock}
-${queryDestructure ? '\n' + queryDestructure : ''}
-${methodBlocks}
 
-    res.status(405).json({ success: false, message: 'Method Not Allowed' });
+// Bodies are forwarded untouched (JSON, multipart, binary), so Next's body parser stays off
+export const config = { api: { bodyParser: false } };
+
+const ALLOWED_METHODS = [${methods.map((m) => `'${m}'`).join(', ')}];
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (!ALLOWED_METHODS.includes(req.method ?? '')) {
+    res.setHeader('Allow', ALLOWED_METHODS.join(', '));
+    return res.status(405).json({ success: false, message: 'Method Not Allowed' });
+  }
+
+  try {
+    const API_URL = process.env.${apiEnvVar} || ${stringLiteral(apiFallback ?? '')};${paramsLine}
+    const search = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+
+    const response = await fetchBackend(\`\${API_URL}${backendPath}\${search}\`, {
+      method: req.method,
+      headers: forwardHeaders(req),
+      body: req.method === 'GET' ? undefined : await readBody(req),
+    });
+    return sendResponse(res, response);
   } catch (error) {
-    console.error('[handler]', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
+    console.error(\`[\${req.method} ${first.path}]\`, error);
+    return res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 }
 `;
@@ -173,39 +80,40 @@ export function nextPathToPageFilePath(nextPath: string): string {
   return [...dirs, last + '.ts'].join('/');
 }
 
+/** Lists the API route files generateRoutesPages() would write, without touching the disk. */
+export function planRoutesPages({ spec, stripPathPrefix, routesOut }: any) {
+  const operations = extractOperations(spec, { stripPathPrefix });
+  const tree = buildPathTree(operations.map((op: any) => op.path));
+
+  // Group operations by output file (multiple methods → one handler file)
+  const byFile = new Map<string, any[]>();
+  for (const op of operations) {
+    const file = join(routesOut, nextPathToPageFilePath(toNextPathWithTree(op.path, tree)));
+    if (!byFile.has(file)) byFile.set(file, []);
+    byFile.get(file)!.push({ ...op, paramMap: buildParamMap(op.path, tree) });
+  }
+  return byFile;
+}
+
 export async function generateRoutesPages({
   spec,
   stripPathPrefix,
   apiEnvVar,
   apiFallback,
   routesOut,
-  cookieName,
   fetchBackendPath,
   fetchBackendFile = 'src/lib/fetchBackend.ts',
   cwd,
 }: any) {
-  const parsed     = typeof spec === 'string' ? await fetchSpec(spec) : spec;
-  const operations = extractOperations(parsed, { stripPathPrefix });
-  const tree       = buildPathTree(operations.map((op: any) => op.path));
-
-  // Group operations by output file (multiple methods → one handler file)
-  const byFile = new Map<string, any[]>();
-  for (const op of operations) {
-    const nextPath = toNextPathWithTree(op.path, tree);
-    const fileKey  = nextPathToPageFilePath(nextPath);
-    if (!byFile.has(fileKey)) byFile.set(fileKey, []);
-    byFile.get(fileKey)!.push({ ...op, paramMap: buildParamMap(op.path, tree) });
-  }
-
+  const parsed = typeof spec === 'string' ? await fetchSpec(spec) : spec;
   const files: string[] = [];
 
-  for (const [fileRelative, ops] of byFile) {
-    const relativePath = join(routesOut, fileRelative);
-    const absolutePath = join(cwd, relativePath);
+  for (const [relativePath, ops] of planRoutesPages({ spec: parsed, stripPathPrefix, routesOut })) {
     // An explicit fetchBackendPath wins (e.g. '@/lib/fetchBackend'); otherwise import relatively
     const fetchBackendImport = fetchBackendPath ?? relativeImport(dirname(relativePath), fetchBackendFile);
-    const content      = renderPagesHandler({ operations: ops, apiEnvVar, apiFallback, fetchBackendImport, cookieName });
+    const content = renderPagesHandler({ operations: ops, apiEnvVar, apiFallback, fetchBackendImport });
 
+    const absolutePath = join(cwd, relativePath);
     mkdirSync(dirname(absolutePath), { recursive: true });
     writeFileSync(absolutePath, content, 'utf-8');
     files.push(relativePath);

@@ -70,28 +70,41 @@ test('nextjs (App Router) output type-checks', async () => {
 test('nextjs-pages output type-checks', async () => {
   const cwd = freshDir('nextjs-pages');
   generateApiClient({ outputPath: 'src/lib/apiClient.ts' }, cwd);
-  generateFetchBackend({ outputPath: 'src/lib/fetchBackend.ts' }, cwd);
-  await generateRoutesPages({ ...base, routesOut: 'src/pages/api', cookieName: 'token', cwd });
+  generateFetchBackend({ cookieName: 'token', framework: 'nextjs-pages', outputPath: 'src/lib/fetchBackend.ts' }, cwd);
+  await generateRoutesPages({ ...base, routesOut: 'src/pages/api', cwd });
   await generateServices({ ...base, servicesOut: 'src/services', routesOut: 'src/pages/api', framework: 'nextjs-pages', cwd });
   typecheck(cwd);
 });
 
-test('route handlers: 204 without body, optional JSON body, multipart and cookies in Pages Router', async () => {
+test('route handlers proxy requests and responses untouched', async () => {
   const cwd = freshDir('routes-content');
   await generateRoutes({ ...base, routesOut: 'src/app/api', cwd });
   const appRoute = read(cwd, 'src/app/api/users/[userId]/route.ts');
-  assert.match(appRoute, /new NextResponse\(null, \{ status: response\.status \}\)/);
+  assert.match(appRoute, /return toResponse\(response\)/);
+  assert.match(appRoute, /encodeURIComponent\(params\.userId\)/);
+  assert.match(appRoute, /export const GET = proxy;\nexport const PATCH = proxy;\nexport const DELETE = proxy;/);
   assert.doesNotMatch(appRoute, /request\.json\(\)/, 'request.json() throws on empty bodies');
   assert.match(appRoute, /from '\.\.\/\.\.\/\.\.\/\.\.\/lib\/fetchBackend'/);
 
-  await generateRoutesPages({ ...base, routesOut: 'src/pages/api', cookieName: 'token', cwd });
-  const avatar = read(cwd, 'src/pages/api/users/[userId]/avatar.ts');
-  assert.match(avatar, /bodyParser: false/);
-  assert.match(avatar, /req\.cookies\?\.\['token'\]/);
-  assert.doesNotMatch(read(cwd, 'src/pages/api/users.ts'), /bodyParser/, 'only multipart files disable bodyParser');
+  await generateRoutesPages({ ...base, routesOut: 'src/pages/api', cwd });
+  const pagesRoute = read(cwd, 'src/pages/api/users.ts');
+  assert.match(pagesRoute, /bodyParser: false/);
+  assert.match(pagesRoute, /return sendResponse\(res, response\)/);
+  assert.match(pagesRoute, /ALLOWED_METHODS = \['GET', 'POST'\]/);
 
+  // App Router helper: cookie via next/headers, Set-Cookie and binary bodies passed through
+  generateFetchBackend({ cookieName: 'token', outputPath: 'src/lib/fetchBackend.ts' }, cwd);
+  const app = read(cwd, 'src/lib/fetchBackend.ts');
+  assert.match(app, /import\('next\/headers'\)/);
+  assert.match(app, /responseType: 'arraybuffer'/);
+  assert.match(app, /headers\.append\('set-cookie', cookie\)/);
+
+  // Pages Router helper: cookie from req.cookies (next/headers is App Router only)
   generateFetchBackend({ cookieName: 'token', framework: 'nextjs-pages', outputPath: 'src/lib/fetchBackend.ts' }, cwd);
-  assert.doesNotMatch(read(cwd, 'src/lib/fetchBackend.ts'), /import\('next\/headers'\)/, 'next/headers is App Router only');
+  const pages = read(cwd, 'src/lib/fetchBackend.ts');
+  assert.doesNotMatch(pages, /import\('next\/headers'\)/);
+  assert.match(pages, /req\.cookies\?\.\['token'\]/);
+  assert.match(pages, /res\.setHeader\('set-cookie', cookies\)/);
 });
 
 for (const hooksMode of ['react-query', 'fetch']) {
