@@ -6,6 +6,9 @@ import {
   buildParamMap,
   extractOperations,
   fetchSpec,
+  lineComment,
+  relativeImport,
+  stringLiteral,
 } from './utils.js';
 
 function buildBackendUrl(path: string, paramMap: Record<string, string>) {
@@ -13,13 +16,11 @@ function buildBackendUrl(path: string, paramMap: Record<string, string>) {
   return `\`\${API_URL}${withParams}\``;
 }
 
-function renderMethodBlock(op: any, { apiEnvVar, apiFallback }: any, hasFileQueryParams: boolean) {
-  const { method, path, hasBody, hasQueryParams, bodyContentType, summary, paramMap } = op;
-  const isMultipart = hasBody && bodyContentType === 'multipart/form-data';
-  const isJson      = hasBody && !isMultipart;
+function renderMethodBlock(op: any, { apiEnvVar, apiFallback }: any, rawBody: boolean) {
+  const { method, path, hasBody, hasQueryParams, summary, paramMap } = op;
 
   const lines: string[] = [];
-  if (summary) lines.push(`    // ${summary}`);
+  if (summary) lines.push(`  // ${lineComment(summary)}`);
   lines.push(`  if (req.method === '${method}') {`);
   lines.push(`    const API_URL = process.env.${apiEnvVar} || '${apiFallback}';`);
   lines.push('');
@@ -34,16 +35,23 @@ function renderMethodBlock(op: any, { apiEnvVar, apiFallback }: any, hasFileQuer
   lines.push('');
 
   const fetchOpts: string[] = [`method: '${method}'`, 'headers'];
-  if (isJson) {
-    lines.push(`    const body = req.body;`);
-    lines.push(`    headers['Content-Type'] = 'application/json';`);
-    fetchOpts.push('body: JSON.stringify(body)');
-  } else if (isMultipart) {
-    lines.push(`    // multipart/form-data — pass body as-is`);
-    fetchOpts.push('body: req.body');
+  if (hasBody && rawBody) {
+    // bodyParser is disabled for this file (multipart): forward the raw bytes with the original
+    // Content-Type so the multipart boundary is preserved
+    lines.push(`    const body = await readRawBody(req);`);
+    lines.push(`    if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];`);
+    fetchOpts.push('body: body.length ? body : undefined');
+  } else if (hasBody) {
+    lines.push(`    const hasBody = req.body !== undefined && req.body !== '';`);
+    lines.push(`    if (hasBody) headers['Content-Type'] = 'application/json';`);
+    fetchOpts.push(`body: hasBody ? JSON.stringify(req.body) : undefined`);
   }
 
   lines.push(`    const response = await fetchBackend(url, { ${fetchOpts.join(', ')} });`);
+  lines.push('');
+  lines.push(`    if (response.status === 204 || response.status === 205 || response.status === 304) {`);
+  lines.push(`      return res.status(response.status).end();`);
+  lines.push(`    }`);
   lines.push('');
   lines.push(`    let data: any;`);
   lines.push(`    const contentType = response.headers.get('content-type') ?? '';`);
@@ -62,9 +70,9 @@ function renderMethodBlock(op: any, { apiEnvVar, apiFallback }: any, hasFileQuer
   return lines.join('\n');
 }
 
-function renderPagesHandler({ operations, apiEnvVar, apiFallback }: any) {
+function renderPagesHandler({ operations, apiEnvVar, apiFallback, fetchBackendImport, cookieName }: any) {
   const summaries = operations
-    .map((op: any) => `// ${op.method} ${op.path}${op.summary ? ` — ${op.summary}` : ''}`)
+    .map((op: any) => `// ${op.method} ${op.path}${op.summary ? ` — ${lineComment(op.summary)}` : ''}`)
     .join('\n');
 
   // Collect unique canonical path param names across all ops in this file
@@ -82,35 +90,63 @@ function renderPagesHandler({ operations, apiEnvVar, apiFallback }: any) {
 
   const hasFileQueryParams = operations.some((op: any) => op.hasQueryParams);
 
+  // Next's bodyParser can't parse multipart; disable it for the whole file and stream bodies through
+  const rawBody = operations.some((op: any) => op.hasBody && op.bodyContentType === 'multipart/form-data');
+
   // Build destructuring line at the top of handler
   let queryDestructure = '';
   if (fileParamNames.length > 0 && hasFileQueryParams) {
     const typeEntries = fileParamNames.map((p) => `${p}: string`).join('; ');
-    queryDestructure = `  const { ${fileParamNames.join(', ')}, ...queryRest } = req.query as { ${typeEntries}; [key: string]: string | string[] };\n`;
+    queryDestructure = `    const { ${fileParamNames.join(', ')}, ...queryRest } = req.query as { ${typeEntries}; [key: string]: string | string[] };\n`;
   } else if (fileParamNames.length > 0) {
     const typeEntries = fileParamNames.map((p) => `${p}: string`).join('; ');
-    queryDestructure = `  const { ${fileParamNames.join(', ')} } = req.query as { ${typeEntries} };\n`;
+    queryDestructure = `    const { ${fileParamNames.join(', ')} } = req.query as { ${typeEntries} };\n`;
   } else if (hasFileQueryParams) {
-    queryDestructure = `  const queryRest = req.query as Record<string, string>;\n`;
+    queryDestructure = `    const queryRest = req.query as Record<string, string>;\n`;
   }
 
   const methodBlocks = operations
-    .map((op: any) => renderMethodBlock(op, { apiEnvVar, apiFallback }, hasFileQueryParams))
-    .join('\n\n');
+    .map((op: any) => renderMethodBlock(op, { apiEnvVar, apiFallback }, rawBody))
+    .join('\n\n')
+    .replace(/^(?=.)/gm, '  ');
+
+  // next/headers cookies() only works in the App Router, so the Pages handler forwards the cookie itself
+  const cookieBlock = cookieName
+    ? `
+    const token = req.cookies?.[${stringLiteral(cookieName)}];
+    if (!authHeader && token) {
+      headers['Authorization'] = \`Bearer \${token}\`;
+    }`
+    : '';
+
+  const rawBodyHelpers = rawBody
+    ? `
+export const config = { api: { bodyParser: false } };
+
+function readRawBody(req: NextApiRequest): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+`
+    : '';
 
   return `// Auto-generated by codegen-openapi — do not edit manually
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { fetchBackend } from '@/lib/fetchBackend';
+import { fetchBackend } from '${fetchBackendImport}';
 
 ${summaries}
-
+${rawBodyHelpers}
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
     const authHeader = req.headers.authorization as string | undefined;
     const headers: Record<string, string> = {};
     if (authHeader) {
       headers['Authorization'] = authHeader;
-    }
+    }${cookieBlock}
 ${queryDestructure ? '\n' + queryDestructure : ''}
 ${methodBlocks}
 
@@ -143,6 +179,9 @@ export async function generateRoutesPages({
   apiEnvVar,
   apiFallback,
   routesOut,
+  cookieName,
+  fetchBackendPath,
+  fetchBackendFile = 'src/lib/fetchBackend.ts',
   cwd,
 }: any) {
   const parsed     = typeof spec === 'string' ? await fetchSpec(spec) : spec;
@@ -163,7 +202,9 @@ export async function generateRoutesPages({
   for (const [fileRelative, ops] of byFile) {
     const relativePath = join(routesOut, fileRelative);
     const absolutePath = join(cwd, relativePath);
-    const content      = renderPagesHandler({ operations: ops, apiEnvVar, apiFallback });
+    // An explicit fetchBackendPath wins (e.g. '@/lib/fetchBackend'); otherwise import relatively
+    const fetchBackendImport = fetchBackendPath ?? relativeImport(dirname(relativePath), fetchBackendFile);
+    const content      = renderPagesHandler({ operations: ops, apiEnvVar, apiFallback, fetchBackendImport, cookieName });
 
     mkdirSync(dirname(absolutePath), { recursive: true });
     writeFileSync(absolutePath, content, 'utf-8');

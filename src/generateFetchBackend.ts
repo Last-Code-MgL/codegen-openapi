@@ -14,6 +14,12 @@ export interface GenerateFetchBackendOptions {
    * @default 15000
    */
   timeout?: number;
+  /**
+   * Router the helper is used from. `next/headers` only works in the App Router, so for
+   * 'nextjs-pages' the cookie is forwarded by the generated API handlers instead.
+   * @default 'nextjs'
+   */
+  framework?: 'nextjs' | 'nextjs-pages';
 }
 
 /**
@@ -28,10 +34,14 @@ export function generateFetchBackend({
   outputPath = 'src/lib/fetchBackend.ts',
   cookieName,
   timeout = 15_000,
+  framework = 'nextjs',
 }: GenerateFetchBackendOptions, cwd: string): string {
-  const hasCookie = !!cookieName;
+  const hasCookie = !!cookieName && framework !== 'nextjs-pages';
 
-  const cookieBlock = hasCookie
+  const cookieBlock = cookieName && !hasCookie
+    ? `
+  // Pages Router: the JWT cookie is forwarded by each API handler (next/headers is App Router only).`
+    : hasCookie
     ? `
   // Propagate the JWT from Next.js server cookies into backend API calls
   const { cookies } = await import('next/headers');

@@ -1,3 +1,5 @@
+import { posix } from 'path';
+
 // ─── Path helpers ─────────────────────────────────────────────────────────────
 
 /**
@@ -141,15 +143,132 @@ export function tagToVarName(tag: string) {
 // ─── OperationId helpers ──────────────────────────────────────────────────────
 
 /**
+ * Converts arbitrary text into a camelCase identifier.
+ * e.g., "get-user_by id" → "getUserById", "2fa" → "_2fa"
+ */
+export function toCamelIdentifier(text: string) {
+  const words = text.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (!words.length) return '_';
+  const id = words
+    .map((w, i) => (i === 0 ? w.charAt(0).toLowerCase() + w.slice(1) : w.charAt(0).toUpperCase() + w.slice(1)))
+    .join('');
+  return /^[0-9]/.test(id) ? `_${id}` : id;
+}
+
+/**
  * Slices off standard NestJS/Spring controller naming conventions for cleaner method names.
  * e.g., adminControllerListUsers → listUsers
  * e.g., AuthController_login     → login
  */
 export function operationIdToMethodName(operationId: string) {
   const withoutController = operationId.replace(/^.+Controller_?/, '');
-  if (!withoutController) return operationId;
-  const clean = withoutController.replace(/^_+/, '');
-  return clean.charAt(0).toLowerCase() + clean.slice(1);
+  return toCamelIdentifier(withoutController || operationId);
+}
+
+/**
+ * Fully-qualified method name, used when two operations in the same service
+ * would otherwise share a name.
+ * e.g., AdminController_list → adminList, PostsController_list → postsList
+ */
+export function operationIdToQualifiedName(operationId: string) {
+  return toCamelIdentifier(operationId.replace(/Controller_?/, ' '));
+}
+
+/**
+ * Builds an operationId for operations that don't declare one.
+ * e.g., GET /users/{id}/posts → getUsersByIdPosts
+ */
+export function operationIdFromPath(method: string, path: string) {
+  const parts = path
+    .split('/')
+    .filter(Boolean)
+    .map((seg) => (seg.startsWith('{') ? `by ${seg.slice(1, -1)}` : seg));
+  return toCamelIdentifier([method.toLowerCase(), ...parts].join(' '));
+}
+
+// ─── Code emission helpers ────────────────────────────────────────────────────
+
+/** Makes a schema name safe to use as a TypeScript identifier. e.g., "Page«User»" → "Page_User_" */
+export function safeTypeName(name: string) {
+  const id = name.replace(/[^A-Za-z0-9_$]/g, '_');
+  return /^[0-9]/.test(id) ? `_${id}` : id || '_';
+}
+
+/** Quotes an object key when it is not a valid identifier. e.g., content-type → "content-type" */
+export function propertyKey(key: string) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);
+}
+
+/** Renders a value as a single-quoted TypeScript string literal. */
+export function stringLiteral(value: string) {
+  return `'${String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r?\n/g, '\\n')}'`;
+}
+
+/** Collapses text into a single line that is safe inside a `//` comment. */
+export function lineComment(text: string) {
+  return String(text).replace(/\s+/g, ' ').trim();
+}
+
+/** Renders text as a JSDoc block that cannot be closed early by a `*\/` inside the text. */
+export function jsDoc(text: string, indent = '') {
+  const lines = String(text).replace(/\*\//g, '*\\/').trim().split(/\r?\n/).map((l) => l.trimEnd());
+  if (lines.length === 1) return `${indent}/** ${lines[0]} */\n`;
+  return `${indent}/**\n${lines.map((l) => `${indent} * ${l}`.trimEnd()).join('\n')}\n${indent} */\n`;
+}
+
+/** Groups operations by their first tag (one service / hooks file per tag). */
+export function groupByTag<T extends { tags: string[] }>(operations: T[]) {
+  const byTag = new Map<string, T[]>();
+  for (const op of operations) {
+    const tag = op.tags[0] ?? 'default';
+    if (!byTag.has(tag)) byTag.set(tag, []);
+    byTag.get(tag)!.push(op);
+  }
+  return byTag;
+}
+
+export interface OperationNames {
+  methodName: string;
+  hookName: string;
+  aliasResponse: string;
+  aliasBody: string | null;
+  aliasParams: string | null;
+}
+
+/**
+ * Assigns collision-free method and type names to the operations of one service file.
+ * - Operations whose short names collide (e.g. two `list`) get qualified names (`usersList`, `adminList`).
+ * - Operation type aliases never shadow a component schema (e.g. schema `LoginResponse` vs op `login`).
+ */
+export function assignOperationNames(operations: any[], spec: any): OperationNames[] {
+  const shortNames = operations.map((op) => operationIdToMethodName(op.operationId));
+  const counts = new Map<string, number>();
+  for (const n of shortNames) counts.set(n, (counts.get(n) ?? 0) + 1);
+
+  const usedMethods = new Set<string>();
+  const usedTypes = new Set(Object.keys(spec?.components?.schemas ?? {}).map(safeTypeName));
+
+  const unique = (candidates: string[], used: Set<string>) => {
+    let name = candidates.find((c) => !used.has(c));
+    for (let i = 2; !name; i++) if (!used.has(`${candidates[0]}${i}`)) name = `${candidates[0]}${i}`;
+    used.add(name);
+    return name;
+  };
+
+  return operations.map((op, i) => {
+    const preferred = counts.get(shortNames[i])! > 1
+      ? operationIdToQualifiedName(op.operationId)
+      : shortNames[i];
+    const methodName = unique([preferred], usedMethods);
+    const P = methodName.charAt(0).toUpperCase() + methodName.slice(1);
+    return {
+      methodName,
+      hookName: `use${P}`,
+      aliasResponse: unique([`${P}Response`, `${P}ResponseData`], usedTypes),
+      aliasBody: op.hasBody ? unique([`${P}Body`, `${P}Payload`], usedTypes) : null,
+      aliasParams: op.hasQueryParams ? unique([`${P}Params`, `${P}QueryParams`], usedTypes) : null,
+    };
+  });
 }
 
 // ─── Spec fetching ───────────────────────────────────────────────────────────────
@@ -173,19 +292,31 @@ export function resolveRef(ref: string, spec: any, depth = 0): any {
   if (depth > 10) return null; // Guardian against infinite loops
   const parts = ref.replace(/^#\//, '').split('/');
   let obj = spec;
-  for (const p of parts) obj = obj?.[decodeURIComponent(p)];
+  for (const p of parts) obj = obj?.[decodePointerSegment(p)];
   if (!obj) return null;
   // Deep-resolve nested $refs
   if (obj.$ref) return resolveRef(obj.$ref, spec, depth + 1);
   return obj;
 }
 
+/** Decodes one JSON Pointer segment (URL-encoding plus the ~1 / ~0 escapes). */
+function decodePointerSegment(seg: string) {
+  return decodeURIComponent(seg).replace(/~1/g, '/').replace(/~0/g, '~');
+}
+
+/** Returns the object a `$ref` points to, or the object itself when it isn't a reference. */
+export function deref(obj: any, spec: any): any {
+  return obj?.$ref ? resolveRef(obj.$ref, spec) ?? {} : obj;
+}
+
 /**
- * Extracts the raw type or component name from a schema $ref.
+ * Extracts the component name from a schema $ref as a valid TypeScript identifier.
  * e.g., "#/components/schemas/LoginDto" → "LoginDto"
+ * e.g., "#/components/schemas/Page«User»" → "Page_User_"
  */
 export function refName(ref: string): string {
-  return ref.split('/').pop() ?? 'unknown';
+  const last = ref.split('/').pop();
+  return last ? safeTypeName(decodePointerSegment(last)) : 'unknown';
 }
 
 /**
@@ -255,31 +386,38 @@ export function extractOperations(spec: any, { stripPathPrefix = '' } = {}) {
   for (const [rawPath, pathItem] of Object.entries((spec.paths ?? {}) as Record<string, any>)) {
     let path = rawPath;
 
-    if (stripPathPrefix && path.startsWith(stripPathPrefix)) {
-      path = path.slice(stripPathPrefix.length) || '/';
+    // Strip only on a segment boundary: "/api" strips "/api/users" but not "/apikeys"
+    const prefix = stripPathPrefix.replace(/\/+$/, '');
+    if (prefix && (path === prefix || path.startsWith(prefix + '/'))) {
+      path = path.slice(prefix.length) || '/';
     }
 
     // Skips standard root endpoints to avoid hijacking the core app layer silently
     if (path === '/') continue;
 
-    const pathLevelParams: any[] = pathItem.parameters ?? [];
+    const pathLevelParams: any[] = (pathItem.parameters ?? []).map((p: any) => deref(p, spec));
 
     for (const [method, operation] of Object.entries(pathItem)) {
       if (!['get', 'post', 'put', 'patch', 'delete'].includes(method)) continue;
       if (typeof operation !== 'object' || !operation) continue;
-      if (!(operation as any).operationId) continue;
 
+      // Resolve $refs to #/components/{parameters,requestBodies,responses}
       const op = operation as any;
+      const opParams: any[] = (op.parameters ?? []).map((p: any) => deref(p, spec));
+      const requestBody = op.requestBody ? deref(op.requestBody, spec) : undefined;
+      const responses = Object.fromEntries(
+        Object.entries(op.responses ?? {}).map(([code, r]) => [code, deref(r, spec)]),
+      );
 
       // Unify parameters tracking overlaps gracefully
-      const opParamNames = new Set((op.parameters ?? []).map((p: any) => p.name));
+      const opParamNames = new Set(opParams.map((p: any) => p.name));
       const mergedParams = [
         ...pathLevelParams.filter((p: any) => !opParamNames.has(p.name)),
-        ...(op.parameters ?? []),
+        ...opParams,
       ];
 
       // Automatically suffix identical duplicate operational ids found on complex APIs
-      let opId: string = op.operationId;
+      let opId: string = op.operationId || operationIdFromPath(method, path);
       if (seenIds.has(opId)) {
         const count = seenIds.get(opId)! + 1;
         seenIds.set(opId, count);
@@ -290,9 +428,9 @@ export function extractOperations(spec: any, { stripPathPrefix = '' } = {}) {
 
       const pathParams = getPathParams(path);
       const hasQueryParams = mergedParams.some((p: any) => p.in === 'query');
-      const hasBody = !!op.requestBody;
-      const bodyContentType = getBodyContentType(op);
-      const tags = op.tags ?? ['default'];
+      const hasBody = !!requestBody;
+      const bodyContentType = getBodyContentType({ requestBody });
+      const tags = op.tags?.length ? op.tags : ['default'];
 
       ops.push({
         operationId: opId,
@@ -304,10 +442,26 @@ export function extractOperations(spec: any, { stripPathPrefix = '' } = {}) {
         bodyContentType,   // 'application/json' | 'multipart/form-data' | undefined
         tags,
         summary: op.summary ?? '',
-        _raw: { ...op, parameters: mergedParams },
+        _raw: { ...op, parameters: mergedParams, requestBody, responses },
       });
     }
   }
 
   return ops;
+}
+
+// ─── Import paths ─────────────────────────────────────────────────────────────
+
+/**
+ * Builds a relative module specifier from a directory to a file (both relative to cwd).
+ * e.g., ('src/hooks/users', 'src/services/users') → '../../services/users'
+ * e.g., ('src/app/api/users', 'src/lib/fetchBackend.ts') → '../../../lib/fetchBackend'
+ */
+export function relativeImport(fromDir: string, toFile: string) {
+  const rel = posix.relative(toPosix(fromDir), toPosix(toFile).replace(/\.(ts|tsx|js|mjs)$/, ''));
+  return rel.startsWith('.') ? rel : `./${rel}`;
+}
+
+function toPosix(p: string) {
+  return p.replace(/\\/g, '/').replace(/^\.\//, '');
 }

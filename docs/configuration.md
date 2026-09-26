@@ -138,13 +138,13 @@ Omit or set to `undefined` to disable automatic auth propagation entirely.
 
 ### `apiClientPath`
 - **Type:** `string`
-- **Default:** `"@/lib/apiClient"`
+- **Default:** relative path to `apiClient.outputPath` (e.g. `'../../lib/apiClient'`)
 
-The import path generated service files use to import the `apiClient` instance.
+The import path generated service files use to import the `apiClient` instance. The relative default works without any path alias; set it to use an alias instead.
 
 ```js
 apiClientPath: '@/lib/apiClient'
-// → import { apiClient } from '@/lib/apiClient';
+// → import apiClient from '@/lib/apiClient';
 ```
 
 ---

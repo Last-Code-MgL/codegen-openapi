@@ -4,7 +4,6 @@ import {
   buildPathTree,
   toNextPathWithTree,
   buildParamMap,
-  operationIdToMethodName,
   slugifyTag,
   extractOperations,
   fetchSpec,
@@ -13,6 +12,13 @@ import {
   isNullable,
   primaryType,
   getSuccessResponseSchema,
+  groupByTag,
+  assignOperationNames,
+  propertyKey,
+  stringLiteral,
+  jsDoc,
+  relativeImport,
+  type OperationNames,
   type PathTreeNode,
 } from './utils.js';
 
@@ -100,12 +106,15 @@ function schemaToTs(schema: any, spec: any, indent = 0, visited = new Set<string
     const hasNullVariant = union.some((s: any) =>
       (Array.isArray(s.type) ? s.type : [s.type]).includes('null'),
     );
+    if (!parts.length) return 'null';
     return parts.join(' | ') + (hasNullVariant ? ' | null' : '') + nullable;
   }
 
   if (type === 'array' || schema.items) {
     const item = schema.items ? schemaToTs(schema.items, spec, indent, new Set(visited)) : 'unknown';
-    return `${item}[]${nullable}`;
+    // (A | B)[] — without parentheses `A | B[]` would mean something else
+    const wrapped = /[|&]/.test(item) && !item.startsWith('{') ? `(${item})` : item;
+    return `${wrapped}[]${nullable}`;
   }
 
   if (type === 'object' || schema.properties) {
@@ -125,8 +134,8 @@ function schemaToTs(schema: any, spec: any, indent = 0, visited = new Set<string
     const props = entries.map(([key, s]: [string, any]) => {
       const propType = schemaToTs(s, spec, indent + 1, new Set(visited));
       const opt = required.has(key) ? '' : '?';
-      const comment = s.description ? `\n${child}/** ${s.description} */` : '';
-      return `${comment}\n${child}${key}${opt}: ${propType};`;
+      const doc = s?.description ? jsDoc(s.description, child) : '';
+      return `\n${doc}${child}${propertyKey(key)}${opt}: ${propType};`;
     });
     return `{${props.join('')}\n${pad}}${nullable}`;
   }
@@ -134,7 +143,7 @@ function schemaToTs(schema: any, spec: any, indent = 0, visited = new Set<string
   if (schema.enum?.length) {
     return (
       schema.enum
-        .map((v: any) => (typeof v === 'string' ? `'${v}'` : String(v)))
+        .map((v: any) => (typeof v === 'string' ? stringLiteral(v) : String(v)))
         .join(' | ') + nullable
     );
   }
@@ -185,25 +194,14 @@ function getSchemasForOp(op: any) {
 
 // ─── Aliases ──────────────────────────────────────────────────────────────────
 
-function pascal(str: string) {
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}
-
-function getAliases(op: any) {
-  const name = operationIdToMethodName(op.operationId);
-  const P = pascal(name);
-  return {
-    methodName: name,
-    aliasResponse: `${P}Response`,
-    aliasBody: op.hasBody ? `${P}Body` : null,
-    aliasParams: op.hasQueryParams ? `${P}Params` : null,
-  };
+/** Names are assigned per service file by assignOperationNames() and attached to each op. */
+function getAliases(op: any): OperationNames {
+  return op.names;
 }
 
 // ─── Types file renderer ──────────────────────────────────────────────────────
 
 function tsBlock(name: string, tsStr: string) {
-  if (tsStr.trimStart().startsWith('{')) return `export interface ${name} ${tsStr}`;
   return `export type ${name} = ${tsStr};`;
 }
 
@@ -238,8 +236,8 @@ function renderTypesFile({ operations, spec }: any) {
     lines.push(`/** ${op.method} ${op.path} — response */`);
     lines.push(tsBlock(aliasResponse, resTs));
 
-    if (aliasBody && reqSchema) {
-      const bodyTs = schemaToTs(reqSchema, spec);
+    if (aliasBody) {
+      const bodyTs = reqSchema ? schemaToTs(reqSchema, spec) : 'unknown';
       lines.push(`/** ${op.method} ${op.path} — payload */`);
       lines.push(tsBlock(aliasBody, bodyTs));
     }
@@ -256,15 +254,25 @@ function renderTypesFile({ operations, spec }: any) {
 
 // ─── Service file renderer ────────────────────────────────────────────────────
 
-function routesOutToUrlBase(routesOut: string, framework?: string): string {
+/**
+ * Maps the routes output directory to the URL the browser calls.
+ * e.g., 'src/app/api' → '/api', 'app/api' → '/api', 'src/pages/api' → '/api',
+ *       'apps/web/src/app/(public)/api' → '/api' (route groups are not part of the URL)
+ */
+export function routesOutToUrlBase(routesOut: string, framework?: string): string {
   if (framework === 'react') return '';
-  const n = routesOut.replace(/\\/g, '/');
-  if (n.startsWith('src/app/')) return '/' + n.slice('src/app/'.length);
-  if (n.startsWith('pages/')) return '/' + n.slice('pages/'.length);
-  return n.startsWith('/') ? n : '/' + n;
+  const segs = routesOut.replace(/\\/g, '/').split('/').filter((s) => s && s !== '.');
+  let rootIdx = -1;
+  for (let i = segs.length - 1; i >= 0; i--) {
+    if (segs[i] === 'app' || segs[i] === 'pages') { rootIdx = i; break; }
+  }
+  const urlSegs = segs
+    .slice(rootIdx + 1)
+    .filter((s) => !(s.startsWith('(') && s.endsWith(')')) && !s.startsWith('@'));
+  return urlSegs.length ? '/' + urlSegs.join('/') : '';
 }
 
-function renderServiceFile({ varName, operations, apiClientPath, tree, urlBase }: any) {
+function renderServiceFile({ varName, operations, apiClientImport, tree, urlBase }: any) {
   const typeNames: string[] = [];
   for (const op of operations) {
     const { aliasResponse, aliasBody, aliasParams } = getAliases(op);
@@ -276,7 +284,7 @@ function renderServiceFile({ varName, operations, apiClientPath, tree, urlBase }
   const methods = operations.map((op: any) => renderMethod(op, tree, urlBase)).join('\n\n');
 
   return `// Auto-generated by codegen-openapi — do not edit manually
-import apiClient from '${apiClientPath}';
+import apiClient from '${apiClientImport}';
 import type { ${typeNames.join(', ')} } from './types';
 
 const ${varName} = {
@@ -290,8 +298,6 @@ export default ${varName};
 function renderMethod(op: any, tree: PathTreeNode, urlBase: string) {
   const { methodName, aliasResponse, aliasBody, aliasParams } = getAliases(op);
   const { method, path, pathParams, hasBody, summary } = op;
-  const { querySchema } = getSchemasForOp(op);
-  const realHasQuery = !!querySchema;
 
   // Use tree-based canonical param names for cross-path consistency with generated routes
   const paramMap = buildParamMap(path, tree);
@@ -308,14 +314,21 @@ function renderMethod(op: any, tree: PathTreeNode, urlBase: string) {
   const args: string[] = [];
   canonicalParams.forEach((p: string) => args.push(`${p}: string`));
   if (aliasBody) args.push(`body: ${aliasBody}`);
-  if (aliasParams && realHasQuery) args.push(`params: ${aliasParams} = {} as ${aliasParams}`);
+  if (aliasParams) args.push(`params: ${aliasParams} = {} as ${aliasParams}`);
 
+  // Axios signatures: get/delete(url, config) — post/put/patch(url, data, config)
+  const config: string[] = [];
+  if (aliasParams) config.push('params');
   const callArgs = [urlStr];
-  if (hasBody && method === 'DELETE') callArgs.push('{ data: body }'); // Axios forces { data } on DELETE bodies
-  else if (hasBody) callArgs.push('body');
-  if (realHasQuery && !hasBody) callArgs.push('{ params }');
+  if (method === 'GET' || method === 'DELETE') {
+    if (hasBody) config.push('data: body');
+    if (config.length) callArgs.push(`{ ${config.join(', ')} }`);
+  } else {
+    if (hasBody || config.length) callArgs.push(hasBody ? 'body' : 'undefined');
+    if (config.length) callArgs.push(`{ ${config.join(', ')} }`);
+  }
 
-  const comment = summary ? `  /** ${summary} */\n` : '';
+  const comment = summary ? jsDoc(summary, '  ') : '';
 
   return `${comment}  async ${methodName}(${args.join(', ')}): Promise<${aliasResponse}> {
     const { data } = await apiClient.${method.toLowerCase()}(${callArgs.join(', ')});
@@ -330,6 +343,7 @@ export async function generateServices({
   stripPathPrefix,
   servicesOut,
   apiClientPath,
+  apiClientFile = 'src/lib/apiClient.ts',
   routesOut,
   framework,
   cwd,
@@ -342,16 +356,12 @@ export async function generateServices({
   // Build tree once from all paths for cross-path canonical param consistency
   const tree = buildPathTree(operations.map((op: any) => op.path));
 
-  const byTag = new Map<string, any[]>();
-  for (const op of operations) {
-    const tag = op.tags[0] ?? 'default';
-    if (!byTag.has(tag)) byTag.set(tag, []);
-    byTag.get(tag)!.push(op);
-  }
-
   const files: string[] = [];
 
-  for (const [tag, ops] of byTag) {
+  for (const [tag, tagOps] of groupByTag(operations)) {
+    const names = assignOperationNames(tagOps, parsed);
+    const ops = tagOps.map((op: any, i: number) => ({ ...op, names: names[i] }));
+
     const slug = slugifyTag(tag);
     const varName =
       slug
@@ -367,10 +377,13 @@ export async function generateServices({
     writeFileSync(join(cwd, typesFile), renderTypesFile({ operations: ops, spec: parsed }), 'utf-8');
     files.push(typesFile);
 
+    // An explicit apiClientPath wins (e.g. an alias like '@/lib/apiClient'); otherwise import relatively
+    const apiClientImport = apiClientPath ?? relativeImport(join(servicesOut, slug), apiClientFile);
+
     const indexFile = join(servicesOut, slug, 'index.ts');
     writeFileSync(
       join(cwd, indexFile),
-      renderServiceFile({ varName, operations: ops, apiClientPath, tree, urlBase }),
+      renderServiceFile({ varName, operations: ops, apiClientImport, tree, urlBase }),
       'utf-8',
     );
     files.push(indexFile);

@@ -3,36 +3,22 @@ import { join } from 'path';
 import {
   buildPathTree,
   buildParamMap,
-  operationIdToMethodName,
+  groupByTag,
+  assignOperationNames,
+  jsDoc,
+  relativeImport,
+  slugToCamel,
+  type OperationNames,
   slugifyTag,
   extractOperations,
   fetchSpec,
   type PathTreeNode,
 } from './utils.js';
 
-// ─── Aliases (mirrors generateServices.ts pattern) ────────────────────────────
+// ─── Aliases (shared with generateServices.ts via assignOperationNames) ───────
 
-function pascal(str: string) {
-  return str.charAt(0).toUpperCase() + str.slice(1);
-}
-
-function getAliases(op: any) {
-  const name = operationIdToMethodName(op.operationId);
-  const P = pascal(name);
-  return {
-    methodName: name,
-    hookName: `use${pascal(name)}`,
-    aliasResponse: `${P}Response`,
-    aliasBody: op.hasBody ? `${P}Body` : null,
-    aliasParams: op.hasQueryParams ? `${P}Params` : null,
-  };
-}
-
-function slugToCamel(slug: string) {
-  return slug
-    .split('-')
-    .map((w: string, i: number) => (i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1)))
-    .join('');
+function getAliases(op: any): OperationNames {
+  return op.names;
 }
 
 // ─── React Query hooks ────────────────────────────────────────────────────────
@@ -48,7 +34,7 @@ function renderQueryHook(op: any, serviceVarName: string, tree: PathTreeNode) {
   canonicalParams.forEach((p: string) => args.push(`${p}: string`));
   if (aliasParams && hasQueryParams) args.push(`params?: ${aliasParams}`);
 
-  const queryKeyItems = ['tag', ...canonicalParams];
+  const queryKeyItems = ['tag', `'${methodName}'`, ...canonicalParams];
   if (aliasParams && hasQueryParams) queryKeyItems.push('params');
   const queryKey = `[${queryKeyItems.join(', ')}]`;
 
@@ -59,7 +45,7 @@ function renderQueryHook(op: any, serviceVarName: string, tree: PathTreeNode) {
     ? `\n    enabled: ${canonicalParams.map((p) => `!!${p}`).join(' && ')},`
     : '';
 
-  const comment = summary ? `/** ${summary} */\n` : '';
+  const comment = summary ? jsDoc(summary) : '';
 
   return `${comment}export function ${hookName}(${args.join(', ')}) {
   return useQuery<${aliasResponse}>({
@@ -90,7 +76,7 @@ function renderMutationHook(op: any, serviceVarName: string, tagKey: string, tre
     ? `(vars: ${varsType}) => ${serviceVarName}.${methodName}(${serviceArgs.join(', ')})`
     : `() => ${serviceVarName}.${methodName}()`;
 
-  const comment = summary ? `/** ${summary} */\n` : '';
+  const comment = summary ? jsDoc(summary) : '';
 
   return `${comment}export function ${hookName}() {
   const queryClient = useQueryClient();
@@ -120,20 +106,25 @@ function renderFetchQueryHook(op: any, serviceVarName: string, tree: PathTreeNod
   if (aliasParams && hasQueryParams) serviceArgs.push('params');
 
   const hasDeps   = canonicalParams.length > 0;
-  const deps      = hasDeps ? `[${canonicalParams.join(', ')}]` : '[]';
+  const hasParams = !!(aliasParams && hasQueryParams);
+  // params is an object: depend on its serialized value so a new-but-equal object doesn't refetch in a loop
+  const depItems  = [...canonicalParams, ...(hasParams ? ['paramsKey'] : [])];
+  const deps      = `[${depItems.join(', ')}]`;
+  const paramsKeyLine = hasParams ? `\n  const paramsKey = JSON.stringify(params ?? null);` : '';
   const guard     = hasDeps ? `\n    if (${canonicalParams.map(p => `!${p}`).join(' || ')}) { setLoading(false); return; }` : '';
   const initState = hasDeps ? `!!${canonicalParams.map(p => p).join(' && ')}` : 'true';
 
-  const comment = summary ? `/** ${summary} */\n` : '';
+  const comment = summary ? jsDoc(summary) : '';
 
   return `${comment}export function ${hookName}(${args.join(', ')}) {
   const [data, setData] = useState<${aliasResponse} | null>(null);
   const [loading, setLoading] = useState(${initState});
-  const [error, setError] = useState<Error | null>(null);
+  const [error, setError] = useState<Error | null>(null);${paramsKeyLine}
 
   useEffect(() => {${guard}
     let cancelled = false;
     setLoading(true);
+    setError(null);
     ${serviceVarName}.${methodName}(${serviceArgs.join(', ')})
       .then(res => { if (!cancelled) { setData(res); setLoading(false); } })
       .catch(e => { if (!cancelled) { setError(e instanceof Error ? e : new Error(String(e))); setLoading(false); } });
@@ -164,7 +155,7 @@ function renderFetchMutationHook(op: any, serviceVarName: string, tree: PathTree
   const mutateArg  = varFields.length > 0 ? `vars: ${varsType}` : '';
   const awaitCall  = `await ${serviceVarName}.${methodName}(${serviceArgs.join(', ')})`;
 
-  const comment = summary ? `/** ${summary} */\n` : '';
+  const comment = summary ? jsDoc(summary) : '';
 
   return `${comment}export function ${hookName}() {
   const [loading, setLoading] = useState(false);
@@ -191,7 +182,7 @@ function renderFetchMutationHook(op: any, serviceVarName: string, tree: PathTree
 
 // ─── Hooks file renderer ──────────────────────────────────────────────────────
 
-function renderHooksFile({ slug, operations, servicesOut, hooksMode, tree }: any) {
+function renderHooksFile({ slug, operations, serviceImport, hooksMode, tree }: any) {
   const serviceVarName = slugToCamel(slug) + 'Service';
   const tagKey = JSON.stringify(slug);
   const isFetch = hooksMode === 'fetch';
@@ -226,8 +217,8 @@ function renderHooksFile({ slug, operations, servicesOut, hooksMode, tree }: any
 
   return `// Auto-generated by codegen-openapi — do not edit manually
 ${importLine}
-import ${serviceVarName} from '${servicesOut}/${slug}';
-import type { ${typeImports.join(', ')} } from '${servicesOut}/${slug}/types';
+import ${serviceVarName} from '${serviceImport}';
+import type { ${typeImports.join(', ')} } from '${serviceImport}/types';
 ${tagConst}
 ${hooks}
 `;
@@ -249,23 +240,21 @@ export async function generateHooks({
   // Build tree once for cross-path canonical param consistency
   const tree = buildPathTree(operations.map((op: any) => op.path));
 
-  const byTag = new Map<string, any[]>();
-  for (const op of operations) {
-    const tag = op.tags[0] ?? 'default';
-    if (!byTag.has(tag)) byTag.set(tag, []);
-    byTag.get(tag)!.push(op);
-  }
-
   const files: string[] = [];
 
-  for (const [tag, ops] of byTag) {
+  for (const [tag, tagOps] of groupByTag(operations)) {
+    // Same naming as generateServices so hooks call the exact service methods/types
+    const names = assignOperationNames(tagOps, parsed);
+    const ops = tagOps.map((op: any, i: number) => ({ ...op, names: names[i] }));
+
     const slug = slugifyTag(tag);
     mkdirSync(join(cwd, hooksOut, slug), { recursive: true });
 
+    const serviceImport = relativeImport(join(hooksOut, slug), join(servicesOut, slug));
     const hooksFile = join(hooksOut, slug, 'index.ts');
     writeFileSync(
       join(cwd, hooksFile),
-      renderHooksFile({ slug, operations: ops, servicesOut, hooksMode, tree }),
+      renderHooksFile({ slug, operations: ops, serviceImport, hooksMode, tree }),
       'utf-8',
     );
     files.push(hooksFile);

@@ -1,0 +1,156 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Edge cases", "version": "1.0.0" },
+  "paths": {
+    "/api/users": {
+      "get": {
+        "operationId": "UsersController_list",
+        "tags": ["Users"],
+        "parameters": [{ "$ref": "#/components/parameters/Page" }],
+        "responses": { "200": { "$ref": "#/components/responses/UserPage" } }
+      },
+      "post": {
+        "operationId": "UsersController_create",
+        "tags": ["Users"],
+        "summary": "Create user\nSecond line with */ inside",
+        "parameters": [{ "name": "dryRun", "in": "query", "schema": { "type": "boolean" } }],
+        "requestBody": { "$ref": "#/components/requestBodies/CreateUser" },
+        "responses": { "201": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } } }
+      }
+    },
+    "/api/users/stats": {
+      "get": {
+        "operationId": "UsersController_stats",
+        "tags": ["Users"],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": { "application/json": { "schema": {
+              "type": "object", "nullable": true,
+              "properties": { "x-count": { "type": "integer" }, "@type": { "type": "string" } }
+            } } }
+          }
+        }
+      }
+    },
+    "/api/users/{userId}": {
+      "get": {
+        "operationId": "UsersController_get",
+        "tags": ["Users"],
+        "parameters": [{ "name": "userId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "$ref": "#/components/responses/UserOk" } }
+      },
+      "patch": {
+        "operationId": "UsersController_update",
+        "tags": ["Users"],
+        "parameters": [{ "name": "userId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "content": { "application/json": { "schema": {
+          "allOf": [
+            { "type": "object", "properties": { "nickname": { "type": "string" } } },
+            { "$ref": "#/components/schemas/User" }
+          ]
+        } } } },
+        "responses": { "200": { "$ref": "#/components/responses/UserOk" } }
+      },
+      "delete": {
+        "operationId": "UsersController_remove",
+        "tags": ["Users"],
+        "parameters": [{ "name": "userId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "204": { "description": "deleted" } }
+      }
+    },
+    "/api/users/{id}/posts": {
+      "get": {
+        "operationId": "PostsController_list",
+        "tags": ["Users"],
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/api/users/{userId}/activate": {
+      "post": {
+        "operationId": "UsersController_activate",
+        "tags": ["Users"],
+        "parameters": [
+          { "name": "userId", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "notify", "in": "query", "schema": { "type": "boolean" } }
+        ],
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/api/users/{userId}/avatar": {
+      "post": {
+        "operationId": "UsersController_uploadAvatar",
+        "tags": ["Users"],
+        "parameters": [{ "name": "userId", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "requestBody": { "content": { "multipart/form-data": { "schema": {
+          "type": "object", "properties": { "file": { "type": "string", "format": "binary" } }
+        } } } },
+        "responses": { "201": { "description": "ok" } }
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "operationId": "AdminController_list",
+        "tags": ["Users"],
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "AuthController_login",
+        "tags": ["Auth"],
+        "requestBody": { "content": { "application/json": { "schema": {
+          "type": "object", "required": ["email", "password"],
+          "properties": { "email": { "type": "string" }, "password": { "type": "string" } }
+        } } } },
+        "responses": { "200": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginResponse" } } } } }
+      }
+    },
+    "/api/apikeys": {
+      "get": {
+        "operationId": "ApiKeysController_list",
+        "tags": ["API Keys"],
+        "responses": { "200": { "description": "ok" } }
+      }
+    },
+    "/api/health": {
+      "get": { "responses": { "200": { "description": "ok" } } }
+    }
+  },
+  "components": {
+    "parameters": {
+      "Page": { "name": "page", "in": "query", "schema": { "type": "integer" } }
+    },
+    "requestBodies": {
+      "CreateUser": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } }
+    },
+    "responses": {
+      "UserOk": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+      "UserPage": { "description": "ok", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Page«User»" } } } }
+    },
+    "schemas": {
+      "User": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string", "description": "Display name */ with comment terminator" },
+          "role": { "type": "string", "enum": ["admin", "o'wner"] },
+          "content-type": { "type": "string" }
+        }
+      },
+      "Page«User»": {
+        "type": "object",
+        "properties": {
+          "items": { "type": "array", "items": { "$ref": "#/components/schemas/User" } },
+          "total": { "type": "integer" }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": { "token": { "type": "string" } }
+      }
+    }
+  }
+}

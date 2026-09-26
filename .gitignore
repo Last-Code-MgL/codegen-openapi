@@ -39,3 +39,5 @@ coverage/
 *.tsbuildinfo
 
 ROADMAP.md
+# Test output
+test/.tmp/

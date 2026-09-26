@@ -87,8 +87,9 @@ export interface CodegenConfig {
   servicesOut?: string;
 
   /**
-   * Import path the generated service files use to inject the custom HTTP apiClient payload.
-   * @default '@/lib/apiClient'
+   * Import path the generated service files use to import the apiClient instance.
+   * By default a relative path to `apiClient.outputPath` is used, so no path alias is required.
+   * @example '@/lib/apiClient'
    */
   apiClientPath?: string;
 
