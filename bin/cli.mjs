@@ -3,34 +3,29 @@
 /**
  * openapi-gen CLI
  *
- * Commands:
- *   openapi-gen run                  Interactive setup wizard (recommended for new projects)
- *   openapi-gen add                  Add a new API to an existing config
- *   openapi-gen generate [--prune]   Generate routes, services, hooks, apiClient and fetchBackend
- *   openapi-gen diff                 Show what changed in the spec vs what's on disk
- *   openapi-gen init                 Create a openapi-gen.config.mjs starter file
- *   openapi-gen --help               Show this help
- *
- * Options:
- *   --config <path>   Path to config file (default: openapi-gen.config.mjs)
+ *   openapi-gen run                  Interactive setup (English / Português)
+ *   openapi-gen add                  Connect another API
+ *   openapi-gen generate             Generate everything (--prune, --watch)
+ *   openapi-gen diff                 What would change, without writing
+ *   openapi-gen info                 Resolved settings: folders, env variables, counts
+ *   openapi-gen init                 Commented starter config
  */
 
 import { pathToFileURL } from 'url';
-import { resolve, dirname, join, relative } from 'path';
-import { existsSync, writeFileSync, readdirSync, readFileSync, rmSync, rmdirSync } from 'fs';
+import { resolve, dirname, join, relative, extname } from 'path';
+import { existsSync, writeFileSync, readdirSync, readFileSync, rmSync, rmdirSync, statSync, watchFile, unwatchFile } from 'fs';
+import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
+import { messages, detectLanguage } from './i18n.mjs';
+import { createPrompter } from './prompt.mjs';
 
 const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
 
-// ─── Colors (Zero dependencies native escape codes) ───────────────────────────
+// ─── Output helpers ───────────────────────────────────────────────────────────
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = Object.fromEntries(Object.entries({
-  reset:  '\x1b[0m',
-  bold:   '\x1b[1m',
-  green:  '\x1b[32m',
-  cyan:   '\x1b[36m',
-  yellow: '\x1b[33m',
-  red:    '\x1b[31m',
-  gray:   '\x1b[90m',
+  reset: '\x1b[0m', bold: '\x1b[1m', green: '\x1b[32m', cyan: '\x1b[36m',
+  yellow: '\x1b[33m', red: '\x1b[31m', gray: '\x1b[90m',
 }).map(([k, v]) => [k, useColor ? v : '']));
 
 const ok   = (s) => `${c.green}✓${c.reset} ${s}`;
@@ -38,45 +33,45 @@ const err  = (s) => `${c.red}✗${c.reset} ${s}`;
 const warn = (s) => `${c.yellow}!${c.reset} ${s}`;
 const tip  = (s) => `${c.cyan}→${c.reset} ${s}`;
 const dim  = (s) => `${c.gray}${s}${c.reset}`;
+const line = () => `${c.gray}${'─'.repeat(60)}${c.reset}`;
+const style = { c, ok, err, warn, tip, dim };
 
 /** Renders a string as a single-quoted JS literal for generated config files. */
 const q = (s) => `'${String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
-
 const toPosix = (p) => p.replace(/\\/g, '/');
+const rel = (p) => toPosix(relative(process.cwd(), p) || p);
+
+/** Error already explained to the user; the message is printed once by the caller. */
+class CliError extends Error {}
 
 // ─── Help ─────────────────────────────────────────────────────────────────────
 function printHelp() {
   console.log(`
 ${c.bold}openapi-gen${c.reset} ${dim(`v${version}`)}
 
-${c.bold}Usage:${c.reset}
-  openapi-gen ${c.cyan}run${c.reset}                    Interactive setup wizard (start here)
-  openapi-gen ${c.cyan}add${c.reset}                    Add a new API to an existing config
-  openapi-gen ${c.cyan}generate${c.reset} ${c.yellow}[--prune]${c.reset}     Generate all files from config
-  openapi-gen ${c.cyan}diff${c.reset}                   Show spec changes vs files on disk
-  openapi-gen ${c.cyan}init${c.reset}                   Create a blank starter config file
+${c.bold}Commands:${c.reset}
+  ${c.cyan}run${c.reset}                 Interactive setup — start here (English / Português)
+  ${c.cyan}add${c.reset}                 Connect another API to the config
+  ${c.cyan}generate${c.reset}            Generate everything (default command)
+  ${c.cyan}diff${c.reset}                Show what would change, without writing
+  ${c.cyan}info${c.reset}                Show the resolved settings: folders, env variables, counts
+  ${c.cyan}init${c.reset}                Write a commented starter config
 
 ${c.bold}Options:${c.reset}
-  --config ${c.yellow}<path>${c.reset}                Config file path
-                                 (default: openapi-gen.config.mjs)
-  --prune                        With generate: delete generated files that are
-                                 no longer in the spec (hand-written files are
-                                 never touched)
-  --help, -h                     Show this help
-  --version, -v                  Show the version
+  --config ${c.yellow}<path>${c.reset}     Config file (default: openapi-gen.config.{mjs,js,ts})
+  --prune             generate: delete generated files for endpoints removed from the spec
+  --watch, -w         generate: regenerate when the config or a spec changes
+  --lang ${c.yellow}<en|pt>${c.reset}      run / add: language of the questions
+  --yes, -y           run / add: accept every default (use with --spec)
+  --spec ${c.yellow}<url|file>${c.reset}   run / add: the OpenAPI spec
+  --version, -v       Show the version
+  --help, -h          Show this help
 
 ${c.bold}Examples:${c.reset}
-  ${dim('# New project — guided setup')}
   npx openapi-gen run
-
-  ${dim('# Check what changed before re-generating')}
-  npx openapi-gen diff
-
-  ${dim('# Re-generate and remove files for endpoints that were deleted')}
+  npx openapi-gen run --lang pt
   npx openapi-gen generate --prune
-
-  ${dim('# In package.json scripts')}
-  ${dim('"codegen": "openapi-gen generate"')}
+  npx openapi-gen generate --watch
 
 ${c.bold}Docs:${c.reset} https://last-code-mgl.github.io/codegen-openapi/
 `);
@@ -88,10 +83,7 @@ function readJson(path) {
   try { return JSON.parse(readFileSync(path, 'utf-8')); } catch { return null; }
 }
 
-/**
- * Looks at the project in `cwd` to pick sensible defaults: framework, src/ layout,
- * installed libraries and package manager.
- */
+/** Framework, folders, installed packages and package manager of the project in `cwd`. */
 function detectProject(cwd) {
   const pkg = readJson(join(cwd, 'package.json'));
   const deps = { ...pkg?.dependencies, ...pkg?.devDependencies, ...pkg?.peerDependencies };
@@ -115,10 +107,12 @@ function detectProject(cwd) {
     hasPackageJson: !!pkg,
     deps,
     framework,
-    routesOut: { nextjs: `${appDir}/api`, 'nextjs-pages': `${pagesDir}/api` },
-    servicesOut: inSrc('services'),
-    hooksOut: inSrc('hooks'),
-    libDir: inSrc('lib'),
+    output: {
+      routes: { nextjs: `${appDir}/api`, 'nextjs-pages': `${pagesDir}/api`, react: undefined },
+      services: inSrc('services'),
+      hooks: inSrc('hooks'),
+      lib: inSrc('lib'),
+    },
     packageManager: has('pnpm-lock.yaml') ? 'pnpm'
       : has('yarn.lock') ? 'yarn'
       : has('bun.lockb') || has('bun.lock') ? 'bun'
@@ -136,31 +130,50 @@ function installCommand(pm, packages, dev) {
   }
 }
 
-/** Longest static path prefix shared by every path in the spec, e.g. "/api" or "/api/v1". */
-function suggestStripPrefix(spec) {
-  const paths = Object.keys(spec?.paths ?? {});
-  if (!paths.length) return '';
-  const split = paths.map((p) => p.split('/').filter(Boolean));
-  const common = [];
-  for (let i = 0; ; i++) {
-    const seg = split[0][i];
-    if (!seg || seg.startsWith('{')) break;
-    // Keep at least one segment after the prefix for every path
-    if (!split.every((s) => s[i] === seg && s.length > i + 1)) break;
-    common.push(seg);
-  }
-  return common.length ? '/' + common.join('/') : '';
+// ─── Config files ─────────────────────────────────────────────────────────────
+
+const CONFIG_NAMES = ['openapi-gen.config.mjs', 'openapi-gen.config.js', 'openapi-gen.config.ts', 'openapi-gen.config.mts', 'openapi-gen.config.cjs'];
+
+/** --config, else the first config file found, else the default name for a new one. */
+function findConfigPath(cwd, explicit) {
+  if (explicit) return resolve(cwd, explicit);
+  const found = CONFIG_NAMES.map((n) => join(cwd, n)).find((p) => existsSync(p));
+  return found ?? join(cwd, CONFIG_NAMES[0]);
 }
 
-// ─── Config Validation ────────────────────────────────────────────────────────
+async function loadConfig(configPath) {
+  if (!existsSync(configPath)) {
+    console.error(`\n${err(`Config file not found: ${rel(configPath)}`)}`);
+    console.error(`\n  Run ${c.cyan}npx openapi-gen run${c.reset} to create one interactively.\n`);
+    throw new CliError();
+  }
+  try {
+    // Cache-bust so reloads (add, --watch) always see the latest file
+    const mod = await import(pathToFileURL(configPath).href + '?t=' + Date.now());
+    return mod.default ?? mod;
+  } catch (e) {
+    console.error(`\n${err(`Failed to load config: ${rel(configPath)}`)}`);
+    if (e.code === 'ERR_UNKNOWN_FILE_EXTENSION' && /\.m?ts$/.test(configPath)) {
+      console.error(`  TypeScript config files need Node.js 22.18+ (you have ${process.version}).`);
+      console.error(`  Rename it to ${c.cyan}openapi-gen.config.mjs${c.reset} and keep the types with a JSDoc comment.\n`);
+    } else {
+      console.error(`  ${c.red}${e.message}${c.reset}\n`);
+    }
+    throw new CliError();
+  }
+}
 
-const KNOWN_KEYS = [
-  'name', 'framework', 'spec', 'routesOut', 'servicesOut', 'hooksOut', 'hooksMode',
-  'apiEnvVar', 'apiFallback', 'stripPathPrefix', 'cookieName', 'apiClientPath',
-  'apiClient', 'fetchBackend',
-];
-const KNOWN_API_CLIENT_KEYS = ['outputPath', 'cookieName', 'deviceTracking', 'unauthorizedRedirect'];
-const KNOWN_FETCH_BACKEND_KEYS = ['outputPath', 'cookieName', 'timeout'];
+async function loadGenerators() {
+  try {
+    return await import(new URL('../dist/index.js', import.meta.url).href);
+  } catch (e) {
+    console.error(`\n${err('Build not found. Run "npm run build" first.')}`);
+    console.error(`  ${c.red}${e.message}${c.reset}\n`);
+    throw new CliError();
+  }
+}
+
+// ─── Config validation ────────────────────────────────────────────────────────
 
 function editDistance(a, b) {
   a = a.toLowerCase(); b = b.toLowerCase();
@@ -177,703 +190,203 @@ function editDistance(a, b) {
   return row[b.length];
 }
 
-function unknownKeyErrors(obj, known, prefix = '') {
-  return Object.keys(obj)
-    .filter((k) => !known.includes(k))
-    .map((k) => {
-      const best = known.map((n) => [n, editDistance(k, n)]).sort((x, y) => x[1] - y[1])[0];
-      const hint = best && best[1] <= 3 ? ` — did you mean "${prefix}${best[0]}"?` : '';
-      return `unknown option "${prefix}${k}"${hint}`;
-    });
+function unknownKeys(obj, known, prefix, errors) {
+  for (const k of Object.keys(obj)) {
+    if (known.includes(k)) continue;
+    const best = known.map((n) => [n, editDistance(k, n)]).sort((x, y) => x[1] - y[1])[0];
+    const hint = best && best[1] <= 3 ? ` — did you mean "${prefix}${best[0]}"?` : '';
+    errors.push(`unknown option "${prefix}${k}"${hint}`);
+  }
 }
 
-function validateConfig(cfg, index) {
+const isObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Validates the current format (`{ apis: { ... } }`). Returns error messages. */
+function validateApisConfig(cfg) {
   const errors = [];
-  const label = cfg?.name ? `"${cfg.name}"` : `config[${index}]`;
+  unknownKeys(cfg, ['framework', 'apis', 'auth', 'hooks', 'output', 'apiClient', 'fetchBackend', 'afterGenerate'], '', errors);
 
-  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
-    console.error(`\n${c.red}${c.bold}Config validation failed for ${label}:${c.reset}`);
-    console.error(`  ${err('each entry must be an object like { name, spec, ... }')}`);
-    return false;
+  if (cfg.framework !== undefined && !['nextjs', 'nextjs-pages', 'react'].includes(cfg.framework)) {
+    errors.push(`"framework" must be 'nextjs', 'nextjs-pages' or 'react', got ${JSON.stringify(cfg.framework)}`);
   }
-
-  errors.push(...unknownKeyErrors(cfg, KNOWN_KEYS));
-
-  if (!cfg.spec) {
-    errors.push('"spec" is required — provide a URL or local file path to your OpenAPI JSON');
-  } else if (typeof cfg.spec !== 'string') {
-    errors.push(`"spec" must be a string, got ${typeof cfg.spec}`);
+  if (cfg.hooks !== undefined && !['react-query', 'fetch'].includes(cfg.hooks)) {
+    errors.push(`"hooks" must be 'react-query' or 'fetch', got ${JSON.stringify(cfg.hooks)}`);
   }
+  if (cfg.hooks !== undefined && cfg.framework !== 'react') errors.push('"hooks" only applies when framework is \'react\'');
 
-  for (const key of ['name', 'routesOut', 'servicesOut', 'hooksOut', 'apiEnvVar', 'apiFallback', 'stripPathPrefix', 'cookieName', 'apiClientPath']) {
-    if (cfg[key] !== undefined && typeof cfg[key] !== 'string') {
-      errors.push(`"${key}" must be a string, got ${typeof cfg[key]}`);
+  if (cfg.auth !== undefined && cfg.auth !== false) {
+    if (!isObject(cfg.auth)) errors.push('"auth" must be { cookie: \'name\' } or false');
+    else {
+      unknownKeys(cfg.auth, ['cookie', 'loginPath'], 'auth.', errors);
+      if (typeof cfg.auth.cookie !== 'string' || !cfg.auth.cookie) errors.push('"auth.cookie" must be the cookie name, e.g. \'accessToken\'');
+      if (cfg.auth.loginPath !== undefined && typeof cfg.auth.loginPath !== 'string') errors.push('"auth.loginPath" must be a string');
     }
   }
 
+  for (const [key, known] of [
+    ['output', ['routes', 'services', 'hooks', 'lib']],
+    ['apiClient', ['deviceTracking', 'importPath']],
+    ['fetchBackend', ['timeout']],
+  ]) {
+    if (cfg[key] === undefined) continue;
+    if (!isObject(cfg[key])) { errors.push(`"${key}" must be an object`); continue; }
+    unknownKeys(cfg[key], known, `${key}.`, errors);
+  }
+  for (const [k, v] of Object.entries(cfg.output ?? {})) {
+    if (typeof v !== 'string') errors.push(`"output.${k}" must be a folder path string`);
+  }
+  if (cfg.fetchBackend?.timeout !== undefined && !(typeof cfg.fetchBackend.timeout === 'number' && cfg.fetchBackend.timeout > 0)) {
+    errors.push('"fetchBackend.timeout" must be a positive number of milliseconds');
+  }
+  if (cfg.afterGenerate !== undefined && ![cfg.afterGenerate].flat().every((s) => typeof s === 'string')) {
+    errors.push('"afterGenerate" must be a command string or a list of commands');
+  }
+
+  if (!isObject(cfg.apis) || !Object.keys(cfg.apis).length) {
+    errors.push('"apis" must list at least one API, e.g. apis: { core: { spec: \'./openapi.json\' } }');
+    return errors;
+  }
+
+  for (const [name, api] of Object.entries(cfg.apis)) {
+    const p = `apis.${name}.`;
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) errors.push(`API name "${name}" may only contain letters, numbers, - and _`);
+    if (!isObject(api)) { errors.push(`"apis.${name}" must be an object like { spec: '...' }`); continue; }
+    unknownKeys(api, ['spec', 'baseUrl', 'stripPrefix', 'include', 'exclude', 'output'], p, errors);
+    if (typeof api.spec !== 'string' || !api.spec) errors.push(`"${p}spec" is required — the URL or file path of the OpenAPI spec`);
+    if (api.baseUrl !== undefined && typeof api.baseUrl !== 'string') {
+      if (!isObject(api.baseUrl)) errors.push(`"${p}baseUrl" must be a URL or { env, fallback }`);
+      else {
+        unknownKeys(api.baseUrl, ['env', 'fallback'], `${p}baseUrl.`, errors);
+        if (api.baseUrl.env !== undefined && !ENV_NAME.test(api.baseUrl.env)) errors.push(`"${p}baseUrl.env" must be a valid environment variable name`);
+      }
+    }
+    if (api.stripPrefix !== undefined && api.stripPrefix !== false && typeof api.stripPrefix !== 'string') {
+      errors.push(`"${p}stripPrefix" must be 'auto', a prefix like '/api', or false`);
+    }
+    for (const key of ['include', 'exclude']) {
+      if (api[key] === undefined) continue;
+      if (!isObject(api[key])) { errors.push(`"${p}${key}" must be { tags, paths, operations }`); continue; }
+      unknownKeys(api[key], ['tags', 'paths', 'operations'], `${p}${key}.`, errors);
+      for (const [k, v] of Object.entries(api[key])) {
+        if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) errors.push(`"${p}${key}.${k}" must be a list of strings`);
+      }
+    }
+    if (api.output !== undefined) {
+      if (!isObject(api.output)) errors.push(`"${p}output" must be an object`);
+      else unknownKeys(api.output, ['routes', 'services', 'hooks'], `${p}output.`, errors);
+    }
+  }
+  return errors;
+}
+
+const LEGACY_KEYS = [
+  'name', 'framework', 'spec', 'routesOut', 'servicesOut', 'hooksOut', 'hooksMode',
+  'apiEnvVar', 'apiFallback', 'stripPathPrefix', 'cookieName', 'apiClientPath',
+  'apiClient', 'fetchBackend',
+];
+
+/** Validates one entry of the legacy list format. Returns error messages. */
+function validateLegacyEntry(cfg) {
+  const errors = [];
+  if (!isObject(cfg)) return ['each entry must be an object like { name, spec, ... }'];
+  unknownKeys(cfg, LEGACY_KEYS, '', errors);
+
+  if (!cfg.spec) errors.push('"spec" is required — provide a URL or local file path to your OpenAPI spec');
+  else if (typeof cfg.spec !== 'string') errors.push(`"spec" must be a string, got ${typeof cfg.spec}`);
+
+  for (const key of ['name', 'routesOut', 'servicesOut', 'hooksOut', 'apiEnvVar', 'apiFallback', 'stripPathPrefix', 'cookieName', 'apiClientPath']) {
+    if (cfg[key] !== undefined && typeof cfg[key] !== 'string') errors.push(`"${key}" must be a string, got ${typeof cfg[key]}`);
+  }
   if (cfg.framework !== undefined && !['nextjs', 'nextjs-pages', 'react'].includes(cfg.framework)) {
     errors.push(`"framework" must be 'nextjs', 'nextjs-pages', or 'react', got "${cfg.framework}"`);
   }
-
-  if (cfg.framework === 'react' && cfg.routesOut !== undefined) {
-    errors.push('"routesOut" is not applicable when framework is "react"');
-  }
-
+  if (cfg.framework === 'react' && cfg.routesOut !== undefined) errors.push('"routesOut" is not applicable when framework is "react"');
   if (cfg.hooksMode !== undefined && !['react-query', 'fetch'].includes(cfg.hooksMode)) {
     errors.push(`"hooksMode" must be 'react-query' or 'fetch', got "${cfg.hooksMode}"`);
   }
+  if (cfg.hooksMode !== undefined && cfg.framework !== 'react') errors.push('"hooksMode" is only applicable when framework is "react"');
+  if (cfg.hooksOut !== undefined && cfg.framework !== 'react') errors.push('"hooksOut" is only applicable when framework is "react"');
+  if (cfg.apiEnvVar !== undefined && !ENV_NAME.test(cfg.apiEnvVar)) errors.push(`"apiEnvVar" must be a valid environment variable name, got "${cfg.apiEnvVar}"`);
 
-  if (cfg.hooksMode !== undefined && cfg.framework !== 'react') {
-    errors.push('"hooksMode" is only applicable when framework is "react"');
+  for (const [key, known] of [
+    ['apiClient', ['outputPath', 'cookieName', 'deviceTracking', 'unauthorizedRedirect']],
+    ['fetchBackend', ['outputPath', 'cookieName', 'timeout']],
+  ]) {
+    if (cfg[key] === undefined || cfg[key] === false) continue;
+    if (!isObject(cfg[key])) { errors.push(`"${key}" must be false or a config object, got ${typeof cfg[key]}`); continue; }
+    unknownKeys(cfg[key], known, `${key}.`, errors);
   }
-
-  if (cfg.hooksOut !== undefined && cfg.framework !== 'react') {
-    errors.push('"hooksOut" is only applicable when framework is "react"');
+  const timeout = cfg.fetchBackend?.timeout;
+  if (timeout !== undefined && (typeof timeout !== 'number' || timeout <= 0)) {
+    errors.push(`"fetchBackend.timeout" must be a positive number in ms, got ${JSON.stringify(timeout)}`);
   }
-
-  if (cfg.apiEnvVar !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(cfg.apiEnvVar)) {
-    errors.push(`"apiEnvVar" must be a valid environment variable name, got "${cfg.apiEnvVar}"`);
+  if (cfg.apiClient?.unauthorizedRedirect !== undefined && typeof cfg.apiClient.unauthorizedRedirect !== 'string') {
+    errors.push(`"apiClient.unauthorizedRedirect" must be a string, got ${typeof cfg.apiClient.unauthorizedRedirect}`);
   }
+  return errors;
+}
 
-  if (cfg.apiClient !== undefined && cfg.apiClient !== false && (typeof cfg.apiClient !== 'object' || cfg.apiClient === null)) {
-    errors.push(`"apiClient" must be false or a config object, got ${typeof cfg.apiClient}`);
+/** Validates either format; prints the problems and throws when there are any. */
+function validateConfig(raw, isApisConfig) {
+  const groups = [];
+  if (isApisConfig(raw)) {
+    const errors = validateApisConfig(raw);
+    if (errors.length) groups.push(['config', errors]);
+  } else {
+    const entries = Array.isArray(raw) ? raw : [raw];
+    entries.forEach((entry, i) => {
+      const errors = validateLegacyEntry(entry);
+      if (errors.length) groups.push([entry?.name ? `"${entry.name}"` : `config[${i}]`, errors]);
+    });
+    const names = entries.map((e) => e?.name).filter(Boolean);
+    const dup = names.find((n, i) => names.indexOf(n) !== i);
+    if (dup) groups.push(['config', [`two APIs are named "${dup}" — give each entry a unique name`]]);
   }
-
-  if (cfg.fetchBackend !== undefined && cfg.fetchBackend !== false && (typeof cfg.fetchBackend !== 'object' || cfg.fetchBackend === null)) {
-    errors.push(`"fetchBackend" must be false or a config object, got ${typeof cfg.fetchBackend}`);
-  }
-
-  if (cfg.fetchBackend && typeof cfg.fetchBackend === 'object') {
-    errors.push(...unknownKeyErrors(cfg.fetchBackend, KNOWN_FETCH_BACKEND_KEYS, 'fetchBackend.'));
-    const { timeout } = cfg.fetchBackend;
-    if (timeout !== undefined && (typeof timeout !== 'number' || timeout <= 0)) {
-      errors.push(`"fetchBackend.timeout" must be a positive number in ms, got ${JSON.stringify(timeout)}`);
-    }
-  }
-
-  if (cfg.apiClient && typeof cfg.apiClient === 'object') {
-    errors.push(...unknownKeyErrors(cfg.apiClient, KNOWN_API_CLIENT_KEYS, 'apiClient.'));
-    const { unauthorizedRedirect } = cfg.apiClient;
-    if (unauthorizedRedirect !== undefined && typeof unauthorizedRedirect !== 'string') {
-      errors.push(`"apiClient.unauthorizedRedirect" must be a string, got ${typeof unauthorizedRedirect}`);
-    }
-  }
-
-  if (errors.length > 0) {
+  if (!groups.length) return;
+  for (const [label, errors] of groups) {
     console.error(`\n${c.red}${c.bold}Config validation failed for ${label}:${c.reset}`);
-    for (const e of errors) {
-      console.error(`  ${err(e)}`);
-    }
-    return false;
+    for (const e of errors) console.error(`  ${err(e)}`);
   }
-
-  return true;
+  console.error(`\n${c.red}Fix the errors above and try again.${c.reset}\n`);
+  throw new CliError();
 }
 
-/** Fills in defaults so every later step sees the same values. */
-function resolveConfig(cfg) {
-  const framework = cfg.framework ?? 'nextjs';
-  return {
-    ...cfg,
-    name: cfg.name ?? 'default',
-    framework,
-    routesOut: cfg.routesOut ?? (framework === 'nextjs-pages' ? 'pages/api' : 'src/app/api'),
-    servicesOut: cfg.servicesOut ?? 'src/services',
-    hooksOut: cfg.hooksOut ?? 'src/hooks',
-    hooksMode: cfg.hooksMode ?? 'react-query',
-    apiEnvVar: cfg.apiEnvVar ?? 'API_URL',
-    apiFallback: cfg.apiFallback ?? '',
-    stripPathPrefix: cfg.stripPathPrefix ?? '/api',
-  };
-}
+// ─── Loading everything a command needs ───────────────────────────────────────
 
-// ─── Shared: load config + generators ────────────────────────────────────────
-async function loadConfig(configPath) {
-  if (!existsSync(configPath)) {
-    console.error(`\n${err(`Config file not found: ${configPath}`)}`);
-    console.log(`\n  Run ${c.cyan}npx openapi-gen run${c.reset} to create one interactively.\n`);
-    process.exit(1);
-  }
-
-  let configs;
-  try {
-    // Cache-bust so re-loads after `add` always reflect the latest file
-    const url = pathToFileURL(resolve(configPath)).href + '?t=' + Date.now();
-    const mod = await import(url);
-    configs = mod.default ?? mod;
-    if (!Array.isArray(configs)) configs = [configs];
-  } catch (e) {
-    console.error(`\n${err(`Failed to load config: ${configPath}`)}`);
-    console.error(`  ${c.red}${e.message}${c.reset}\n`);
-    process.exit(1);
-  }
-
-  return configs;
-}
-
-async function loadGenerators() {
-  const distEntry = new URL('../dist/index.js', import.meta.url).href;
-  try {
-    return await import(distEntry);
-  } catch (e) {
-    console.error(`\n${err('Build not found. Run "npm run build" first.')}`);
-    console.error(`  ${c.red}${e.message}${c.reset}\n`);
-    process.exit(1);
-  }
-}
-
-let sharedPrompt = null;
-
-/**
- * Readline prompt shared by run → add. In a terminal it uses rl.question; with piped input
- * (scripts, CI, tests) lines arrive before the questions, so they are queued and echoed.
- */
-async function createPrompt() {
-  if (sharedPrompt) return sharedPrompt;
-  const { createInterface } = await import('readline');
-  const interactive = !!process.stdin.isTTY;
-  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: interactive });
-
-  const queued = [];
-  const waiting = [];
-  let ended = false;
-  if (!interactive) {
-    rl.on('line', (line) => (waiting.length ? waiting.shift()(line) : queued.push(line)));
-  }
-  rl.on('close', () => {
-    ended = true;
-    if (waiting.length) inputEnded();
-  });
-
-  function inputEnded() {
-    console.error(`\n\n${err('Input ended before all questions were answered.')}\n`);
-    process.exit(1);
-  }
-
-  sharedPrompt = {
-    ask(question) {
-      if (interactive) return new Promise((res) => rl.question(question, res));
-      process.stdout.write(question);
-      const echo = (line) => { process.stdout.write(line + '\n'); return line; };
-      if (queued.length) return Promise.resolve(echo(queued.shift()));
-      if (ended) inputEnded();
-      return new Promise((res) => waiting.push((line) => res(echo(line))));
-    },
-    close() { /* closed once the command finishes — see closePrompt() */ },
-    rl,
-  };
-  return sharedPrompt;
-}
-
-function closePrompt() {
-  sharedPrompt?.rl.close();
-  sharedPrompt = null;
-}
-
-/**
- * Asks for a spec until it loads (or the user accepts an unreachable one).
- * Returns the spec string and, when it loaded, the parsed spec.
- */
-async function askSpec(ask, fetchSpec) {
-  while (true) {
-    const spec = (await ask(`  Spec URL or path ${c.red}(required)${c.reset}:  `)).trim();
-    if (!spec) { console.log(`  ${err('Spec is required.')}`); continue; }
-
-    try {
-      const parsed = await fetchSpec(spec);
-      const ops = Object.values(parsed.paths ?? {})
-        .flatMap((item) => Object.keys(item ?? {}))
-        .filter((m) => ['get', 'post', 'put', 'patch', 'delete'].includes(m)).length;
-      const title = parsed.info?.title ? `${parsed.info.title} — ` : '';
-      console.log(`  ${ok(`${title}${ops} operations found`)}`);
-      return { spec, parsed };
-    } catch (e) {
-      console.log(`  ${err(e.message)}`);
-      const keep = (await ask(`  Use it anyway? ${dim('(y/N)')}:  `)).trim().toLowerCase();
-      if (keep === 'y') return { spec, parsed: null };
-    }
-  }
-}
-
-// ─── Run: Interactive setup wizard ───────────────────────────────────────────
-async function runWizard(configPath) {
-  const { fetchSpec } = await loadGenerators();
-  const project = detectProject(process.cwd());
-  const { ask, close } = await createPrompt();
-
-  const line = `${c.gray}${'─'.repeat(56)}${c.reset}`;
-
-  console.log(`
-${line}
-  ${c.bold}${c.cyan}openapi-gen${c.reset} ${c.bold}Interactive Setup${c.reset}
-${line}
-
-  This wizard creates your ${c.cyan}${relative(process.cwd(), configPath) || configPath}${c.reset} and
-  optionally runs ${c.cyan}generate${c.reset} right away.
-
-  Press ${c.yellow}Enter${c.reset} to accept the default shown in ${c.gray}(parentheses)${c.reset}.
-${line}
-`);
-
-  if (existsSync(configPath)) {
-    const overwrite = await ask(`  ${c.yellow}!${c.reset} ${configPath} already exists.\n    Overwrite it? ${dim('(y/N)')} `);
-    if (overwrite.trim().toLowerCase() !== 'y') {
-      console.log(`\n  Keeping existing config. Run ${c.cyan}npx openapi-gen add${c.reset} to add another API,`);
-      console.log(`  or ${c.cyan}npx openapi-gen generate${c.reset} to use it.\n`);
-      close();
-      return;
-    }
-    console.log('');
-  }
-
-  // ── Step 1: Framework ───────────────────────────────────────────────────────
-  const detectedFramework = project.framework ?? 'nextjs';
-  console.log(`  ${c.bold}Step 1 of 7${c.reset} — ${c.bold}Framework${c.reset}${project.framework ? dim(`  (detected from package.json: ${project.framework})`) : ''}`);
-  console.log(`  ${dim('nextjs        — Next.js App Router (route.ts files in app/api/)')}`);
-  console.log(`  ${dim('nextjs-pages  — Next.js Pages Router (handler files in pages/api/)')}`);
-  console.log(`  ${dim('react         — React only (no server proxy, services + hooks)')}`);
-  let framework = '';
-  while (!framework) {
-    const raw = (await ask(`  Framework ${dim(`(${detectedFramework})`)}:  `)).trim().toLowerCase();
-    if (raw === '') framework = detectedFramework;
-    else if (['nextjs', 'nextjs-pages', 'react'].includes(raw)) framework = raw;
-    else console.log(`  ${err(`'${raw}' is not valid. Choose: nextjs, nextjs-pages, or react`)}`);
-  }
-  const isReact = framework === 'react';
-
-  // ── Step 1b: Hooks mode (React only) ───────────────────────────────────────
-  let hooksMode = 'react-query';
-  if (isReact) {
-    const defaultHooks = project.deps['@tanstack/react-query'] || !project.hasPackageJson ? 'react-query' : 'fetch';
-    console.log(`\n  ${c.bold}Hooks library${c.reset}`);
-    console.log(`  ${dim('react-query: useQuery/useMutation — caching, deduplication, background refetch')}`);
-    console.log(`  ${dim('fetch:       useState/useEffect   — zero extra dependencies, simpler code')}`);
-    while (true) {
-      const raw = (await ask(`  Hooks library ${dim(`(${defaultHooks})`)}:  `)).trim().toLowerCase();
-      if (raw === '') { hooksMode = defaultHooks; break; }
-      if (raw === 'react-query' || raw === 'fetch') { hooksMode = raw; break; }
-      console.log(`  ${err(`'${raw}' is not valid. Choose: react-query or fetch`)}`);
-    }
-  }
-
-  // ── Step 2: API name ────────────────────────────────────────────────────────
-  console.log(`\n  ${c.bold}Step 2 of 7${c.reset} — ${c.bold}API name${c.reset}`);
-  console.log(`  ${dim('A short label to identify this API in CLI output.')}`);
-  const name = (await ask(`  Name ${dim('(my-api)')}:  `)).trim() || 'my-api';
-
-  // ── Step 3: Spec URL ────────────────────────────────────────────────────────
-  console.log(`\n  ${c.bold}Step 3 of 7${c.reset} — ${c.bold}OpenAPI spec${c.reset}`);
-  console.log(`  ${dim('The URL or local path to your OpenAPI JSON spec.')}`);
-  console.log(`  ${dim('Examples: https://api.example.com/api-json')}`);
-  console.log(`  ${dim('          ./openapi.json')}`);
-  const { spec, parsed } = await askSpec(ask, fetchSpec);
-
-  // ── Step 4: Strip prefix ────────────────────────────────────────────────────
-  const suggestedPrefix = parsed ? suggestStripPrefix(parsed) : '/api';
-  console.log(`\n  ${c.bold}Step 4 of 7${c.reset} — ${c.bold}Path prefix to strip${c.reset}`);
-  console.log(`  ${dim('Removed from spec paths before creating files, e.g. /api/users → /users.')}`);
-  if (parsed) {
-    console.log(`  ${dim(suggestedPrefix ? `All paths in your spec start with ${suggestedPrefix}.` : 'Your spec paths have no common prefix.')}`);
-  }
-  console.log(`  ${dim(`Press Enter to use ${suggestedPrefix ? suggestedPrefix : 'no prefix'}, type a prefix, or - for none.`)}`);
-  const stripPathPrefixRaw = (await ask(`  Strip prefix ${dim(`(${suggestedPrefix || 'none'})`)}:  `)).trim();
-  const resolvedPrefix = stripPathPrefixRaw === '' ? suggestedPrefix : (stripPathPrefixRaw === '-' ? '' : stripPathPrefixRaw);
-
-  // ── Step 5: Backend env var (Next.js only) ──────────────────────────────────
-  let apiEnvVar = 'API_URL';
-  let apiFallback = '';
-  if (!isReact) {
-    const specOrigin = /^https?:\/\//i.test(spec) ? new URL(spec).origin : '';
-    const defaultFallback = specOrigin ? specOrigin + resolvedPrefix : '';
-    console.log(`\n  ${c.bold}Step 5 of 7${c.reset} — ${c.bold}Backend URL${c.reset}`);
-    console.log(`  ${dim('The process.env key that holds your backend base URL — read by the generated route handlers.')}`);
-    if (resolvedPrefix) console.log(`  ${dim(`Its value must include the stripped prefix, e.g. https://api.example.com${resolvedPrefix}`)}`);
-    while (true) {
-      apiEnvVar = (await ask(`  Env variable name ${dim('(API_URL)')}:  `)).trim() || 'API_URL';
-      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(apiEnvVar)) break;
-      console.log(`  ${err('Use letters, numbers and underscores only (e.g. CORE_API_URL).')}`);
-    }
-    apiFallback = (await ask(`  Fallback URL if ${apiEnvVar} is not set ${dim(`(${defaultFallback || 'none'})`)}:  `)).trim() || defaultFallback;
-  } else {
-    console.log(`\n  ${c.bold}Step 5 of 7${c.reset} — ${dim('Backend env var — skipped (React has no server-side proxy)')}`);
-  }
-
-  // ── Step 6: Auth cookie ─────────────────────────────────────────────────────
-  console.log(`\n  ${c.bold}Step 6 of 7${c.reset} — ${c.bold}Authentication${c.reset}`);
-  console.log(`  ${dim('The cookie name that stores your JWT token.')}`);
-  console.log(`  ${dim('Used to read auth on the client and propagate to the backend.')}`);
-  console.log(`  ${dim('Leave blank to skip auth — you can add it manually later.')}`);
-  const cookieName = (await ask(`  JWT cookie name ${dim('(leave blank to skip)')}:  `)).trim();
-  const authLine = cookieName
-    ? `    cookieName: ${q(cookieName)},`
-    : `    // cookieName: 'accessToken',  // uncomment to enable JWT auth`;
-
-  // ── Step 7: Generate now? ───────────────────────────────────────────────────
-  console.log(`\n  ${c.bold}Step 7 of 7${c.reset} — ${c.bold}Generate now${c.reset}`);
-  const doGenerate = (await ask(`  Run generate immediately after saving? ${dim('(Y/n)')}:  `)).trim().toLowerCase();
-  const shouldGenerate = doGenerate !== 'n';
-
-  close();
-
-  // ── Build config content ────────────────────────────────────────────────────
-  const header = `// openapi-gen.config.mjs
-// Generated by: npx openapi-gen run
-// Docs: https://last-code-mgl.github.io/codegen-openapi/configuration
-
-/** @type {import('codegen-openapi').CodegenConfig[]} */
-export default [
-  {
-    name: ${q(name)},
-    framework: ${q(framework)},
-
-    // Your OpenAPI JSON spec (URL or local file path)
-    spec: ${q(spec)},
-`;
-
-  let body;
-  if (isReact) {
-    body = `
-    // Output directories
-    servicesOut: ${q(project.servicesOut)},  // Typed service modules
-    hooksOut:    ${q(project.hooksOut)},     // Generated hooks
-    stripPathPrefix: ${q(resolvedPrefix)},
-
-    // 'react-query': useQuery/useMutation (requires @tanstack/react-query)
-    // 'fetch':       useState/useEffect   (zero extra dependencies)
-    hooksMode: ${q(hooksMode)},
-
-    // JWT cookie sent as a Bearer token by the browser client
-${authLine}
-
-    // Browser Axios client — reads the JWT cookie, handles 401 redirects
-    apiClient: {
-      outputPath:           ${q(`${project.libDir}/apiClient.ts`)},
-      unauthorizedRedirect: '/auth',
-    },
-  },
-];
-`;
-  } else {
-    body = `
-    // Output directories
-    routesOut:   ${q(project.routesOut[framework])},  // ${framework === 'nextjs' ? 'App Router route handlers' : 'Pages Router API routes'}
-    servicesOut: ${q(project.servicesOut)},  // Typed service modules
-
-    // Backend proxy configuration
-    apiEnvVar:       ${q(apiEnvVar)},
-    apiFallback:     ${q(apiFallback)},
-    stripPathPrefix: ${q(resolvedPrefix)},
-
-    // JWT cookie for automatic auth propagation (client ↔ route handler ↔ backend)
-${authLine}
-
-    // Browser Axios client — reads the JWT cookie, handles 401 redirects
-    apiClient: {
-      outputPath:           ${q(`${project.libDir}/apiClient.ts`)},
-      deviceTracking:       false,
-      unauthorizedRedirect: '/auth',
-    },
-
-    // Server-side HTTP helper used by the route handlers
-    fetchBackend: {
-      outputPath: ${q(`${project.libDir}/fetchBackend.ts`)},
-      timeout:    15000,
-    },
-  },
-];
-`;
-  }
-
-  writeFileSync(configPath, header + body, 'utf-8');
-
-  console.log(`\n${line}`);
-  console.log(`  ${ok(`Config saved: ${relative(process.cwd(), configPath) || configPath}`)}`);
-  console.log(line);
-
-  if (shouldGenerate) {
-    console.log('');
-    await runGenerate(configPath);
-  } else {
-    console.log(`\n  Run ${c.cyan}npx openapi-gen generate${c.reset} whenever you're ready.`);
-  }
-
-  // Ask if the user wants to chain another API right now
-  const prompt2 = await createPrompt();
-  console.log(`\n${line}`);
-  console.log(`  ${c.bold}Do you have another API to connect?${c.reset}`);
-  console.log(`  ${dim('Example: a payments service, a notifications API, a separate microservice...')}`);
-  const addAnother = (await prompt2.ask(`  Add another API to this config? ${dim('(y/N)')}:  `)).trim().toLowerCase();
-  prompt2.close();
-
-  if (addAnother === 'y') {
-    console.log('');
-    await runAdd(configPath);
-  } else {
-    console.log(`\n  To add more APIs later: ${c.cyan}npx openapi-gen add${c.reset}\n`);
-  }
-}
-
-// ─── Add: Append a new API to existing config ─────────────────────────────────
-
-async function runAdd(configPath) {
-  if (!existsSync(configPath)) {
-    console.error(`\n${err(`No config found at: ${configPath}`)}`);
-    console.error(`  Run ${c.cyan}npx openapi-gen run${c.reset} first to create the initial config.\n`);
-    process.exit(1);
-  }
-
-  const { fetchSpec, appendConfigEntry, renderConfigEntry } = await loadGenerators();
-  const project = detectProject(process.cwd());
-  const existingConfigs = await loadConfig(configPath);
-  const base = existingConfigs[existingConfigs.length - 1] ?? {};
-  const framework = base.framework ?? 'nextjs';
-  const isReact = framework === 'react';
-
-  const { ask, close } = await createPrompt();
-  const line = `${c.gray}${'─'.repeat(56)}${c.reset}`;
-
-  const inheritedParts = [`framework=${framework}`];
-  if (base.cookieName) inheritedParts.push(`cookieName=${base.cookieName}`);
-
-  console.log(`\n${line}`);
-  console.log(`  ${c.bold}${c.cyan}openapi-gen${c.reset} ${c.bold}Add API${c.reset}`);
-  console.log(`${line}`);
-  console.log(`\n  Adding to ${c.cyan}${relative(process.cwd(), configPath) || configPath}${c.reset} ${dim(`(${existingConfigs.length} API${existingConfigs.length > 1 ? 's' : ''} configured)`)}`);
-  console.log(`  ${dim(`Inheriting: ${inheritedParts.join(', ')}`)}`);
-  console.log(`${line}\n`);
-
-  // ── Step 1: API name ──────────────────────────────────────────────────────────
-  const takenNames = new Set(existingConfigs.map((cfg) => cfg.name).filter(Boolean));
-  console.log(`  ${c.bold}Step 1${c.reset} — ${c.bold}API name${c.reset}`);
-  console.log(`  ${dim('Short identifier used in CLI output and as the default folder name.')}`);
-  let name = '';
-  while (!name) {
-    const raw = (await ask(`  Name ${dim('(e.g. payments)')}:  `)).trim();
-    if (!raw) console.log(`  ${err('Name is required.')}`);
-    else if (!/^[A-Za-z0-9_-]+$/.test(raw)) console.log(`  ${err('Use letters, numbers, - and _ only (it becomes a folder name).')}`);
-    else if (takenNames.has(raw)) console.log(`  ${err(`"${raw}" is already configured — pick another name.`)}`);
-    else name = raw;
-  }
-
-  // ── Step 2: Spec ──────────────────────────────────────────────────────────────
-  console.log(`\n  ${c.bold}Step 2${c.reset} — ${c.bold}OpenAPI spec${c.reset}`);
-  console.log(`  ${dim('URL or local file path to the OpenAPI JSON spec.')}`);
-  const { spec, parsed } = await askSpec(ask, fetchSpec);
-  const stripPathPrefix = parsed ? suggestStripPrefix(parsed) : (base.stripPathPrefix ?? '/api');
-  if (parsed) console.log(`  ${dim(`Path prefix to strip: ${stripPathPrefix || 'none'} (edit stripPathPrefix in the config to change it)`)}`);
-
-  // ── Step 3: Authentication ────────────────────────────────────────────────────
-  let cookieName;
-  console.log(`\n  ${c.bold}Step 3${c.reset} — ${c.bold}Authentication${c.reset}`);
-  if (base.cookieName) {
-    console.log(`  ${dim(`Base API uses cookieName='${base.cookieName}'`)}`);
-    console.log(`  ${dim('Enter to keep the same  |  type a new name to override  |  - to disable auth')}`);
-    const cookieInput = (await ask(`  Cookie name ${dim(`(${base.cookieName})`)}:  `)).trim();
-    if (cookieInput === '')        cookieName = base.cookieName;   // inherit
-    else if (cookieInput === '-')  cookieName = undefined;          // disable
-    else                           cookieName = cookieInput;        // override
-  } else {
-    console.log(`  ${dim('Base API has no auth. Enter a cookie name to enable, or leave blank to skip.')}`);
-    const cookieInput = (await ask(`  Cookie name ${dim('(leave blank to skip)')}:  `)).trim();
-    cookieName = cookieInput || undefined;
-  }
-
-  // ── Step 4: Output dirs (framework-specific) ──────────────────────────────────
-  const nameUp = name.toUpperCase().replace(/-/g, '_');
-  let routesOut, servicesOut, hooksOut, hooksMode, apiEnvVar, apiFallback;
-
-  console.log(`\n  ${c.bold}Step 4${c.reset} — ${c.bold}Output directories${c.reset}`);
-  console.log(`  ${dim('Each API gets its own folders so files from different APIs never overwrite each other.')}`);
-
-  if (!isReact) {
-    // Default to a subfolder per API: /api/<name>/... — never shared with the other APIs
-    const defaultRoutes = `${project.routesOut[framework]}/${name}`;
-    routesOut   = (await ask(`  Routes output    ${dim(`(${defaultRoutes})`)}:  `)).trim() || defaultRoutes;
-    servicesOut = (await ask(`  Services output  ${dim(`(${project.servicesOut}/${name})`)}:  `)).trim() || `${project.servicesOut}/${name}`;
-
-    console.log(`\n  ${c.bold}Step 5${c.reset} — ${c.bold}Backend URL${c.reset}`);
-    while (true) {
-      apiEnvVar = (await ask(`  Env variable     ${dim(`(${nameUp}_API_URL)`)}:  `)).trim() || `${nameUp}_API_URL`;
-      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(apiEnvVar)) break;
-      console.log(`  ${err('Use letters, numbers and underscores only.')}`);
-    }
-    const specOrigin = /^https?:\/\//i.test(spec) ? new URL(spec).origin + stripPathPrefix : '';
-    apiFallback = (await ask(`  Fallback URL     ${dim(`(${specOrigin || 'none'})`)}:  `)).trim() || specOrigin;
-  } else {
-    servicesOut = (await ask(`  Services output  ${dim(`(${project.servicesOut}/${name})`)}:  `)).trim() || `${project.servicesOut}/${name}`;
-    hooksOut    = (await ask(`  Hooks output     ${dim(`(${project.hooksOut}/${name})`)}:  `)).trim() || `${project.hooksOut}/${name}`;
-
-    // Hooks mode — inherit from base or ask
-    const baseHooksMode = base.hooksMode ?? 'react-query';
-    console.log(`\n  ${c.bold}Hooks library${c.reset}`);
-    console.log(`  ${dim(`Base API uses hooksMode='${baseHooksMode}'`)}`);
-    console.log(`  ${dim('Enter to keep the same  |  react-query or fetch to override')}`);
-    while (true) {
-      const raw = (await ask(`  Hooks library ${dim(`(${baseHooksMode})`)}:  `)).trim().toLowerCase();
-      if (raw === '')                  { hooksMode = baseHooksMode; break; }
-      else if (raw === 'react-query')  { hooksMode = 'react-query'; break; }
-      else if (raw === 'fetch')        { hooksMode = 'fetch'; break; }
-      else console.log(`  ${err(`'${raw}' is not valid. Choose: react-query or fetch`)}`);
-    }
-  }
-
-  // ── Final step: Generate now? ─────────────────────────────────────────────────
-  const stepNum = isReact ? 5 : 6;
-  console.log(`\n  ${c.bold}Step ${stepNum}${c.reset} — ${c.bold}Generate now${c.reset}`);
-  const doGenerate = (await ask(`  Run generate immediately after saving? ${dim('(Y/n)')}:  `)).trim().toLowerCase();
-  const shouldGenerate = doGenerate !== 'n';
-
-  close();
-
-  // New entry reuses the apiClient/fetchBackend already generated by the first entry
-  const newEntry = {
-    name,
-    framework,
-    spec,
-    ...(routesOut !== undefined ? { routesOut } : {}),
-    servicesOut,
-    ...(hooksOut !== undefined ? { hooksOut } : {}),
-    ...(hooksMode !== undefined ? { hooksMode } : {}),
-    ...(apiEnvVar ? { apiEnvVar } : {}),
-    ...(apiFallback ? { apiFallback } : {}),
-    stripPathPrefix,
-    ...(cookieName ? { cookieName } : {}),
-    apiClient:    false,
-    ...(isReact ? {} : { fetchBackend: false }),
-  };
-
-  // Insert the entry as text so comments and formatting in the config survive
-  const updated = appendConfigEntry(readFileSync(configPath, 'utf-8'), newEntry);
-  if (updated === null) {
-    console.log(`\n${warn(`Couldn't edit ${relative(process.cwd(), configPath) || configPath} automatically (it doesn't use \`export default [ ... ]\`).`)}`);
-    console.log(`  Add this entry to your config array:\n`);
-    console.log(renderConfigEntry(newEntry) + ',\n');
-    return;
-  }
-  writeFileSync(configPath, updated, 'utf-8');
-
-  const total = existingConfigs.length + 1;
-  console.log(`\n${line}`);
-  console.log(`  ${ok(`Config updated: ${relative(process.cwd(), configPath) || configPath}`)}`);
-  console.log(`  ${dim(`${total} APIs configured — your comments and formatting were kept`)}`);
-  console.log(line);
-
-  if (!shouldGenerate) {
-    console.log(`\n  Run ${c.cyan}npx openapi-gen generate${c.reset} to generate all ${total} APIs.`);
-    console.log(`  To add more APIs:        ${c.cyan}npx openapi-gen add${c.reset}\n`);
-    return;
-  }
-
-  console.log('');
-  await runGenerate(configPath);
-  console.log(`  Tip: add more APIs anytime with ${c.cyan}npx openapi-gen add${c.reset}\n`);
-}
-
-// ─── Init: Scaffolding a configuration file natively ──────────────────────────
-function runInit(configPath) {
-  if (existsSync(configPath)) {
-    console.log(`\n${c.yellow}!${c.reset} ${configPath} already exists. Skipping so your data is not overwritten.\n`);
-    return;
-  }
-
-  const project = detectProject(process.cwd());
-  const framework = project.framework ?? 'nextjs';
-
-  const starter = `// openapi-gen.config.mjs
-// Docs: https://last-code-mgl.github.io/codegen-openapi/configuration
-
-/** @type {import('codegen-openapi').CodegenConfig[]} */
-export default [
-  {
-    name: 'my-api',
-
-    // 'nextjs'       — App Router route handlers (route.ts in app/api/)
-    // 'nextjs-pages' — Pages Router API routes (pages/api/)
-    // 'react'        — React only, no server proxy (services + hooks)
-    framework: ${q(framework)},
-
-    // URL or local path to your OpenAPI JSON spec
-    spec: 'https://api.example.com/api-json',
-
-    // Output directories
-    routesOut: ${q(project.routesOut[framework === 'nextjs-pages' ? 'nextjs-pages' : 'nextjs'])},  // Route handlers (nextjs / nextjs-pages only)
-    servicesOut: ${q(project.servicesOut)},   // Typed service modules
-    // hooksOut: ${q(project.hooksOut)},      // Generated hooks (react only)
-
-    // Hooks strategy (react only):
-    //   'react-query' — useQuery/useMutation, requires @tanstack/react-query (default)
-    //   'fetch'       — useState/useEffect, zero extra dependencies
-    // hooksMode: 'react-query',
-
-    // Backend proxy configuration (nextjs only).
-    // The env var must include the stripped prefix, e.g. API_URL=https://api.example.com/api
-    apiEnvVar: 'API_URL',
-    apiFallback: 'https://api.example.com/api',
-    stripPathPrefix: '/api',
-
-    // JWT cookie name — leave commented to disable auth propagation
-    // cookieName: 'accessToken',
-
-    // Browser Axios client config
-    apiClient: {
-      outputPath: ${q(`${project.libDir}/apiClient.ts`)},
-      deviceTracking: false,
-      unauthorizedRedirect: '/auth',
-    },
-
-    // Server-side fetch helper config (nextjs only)
-    fetchBackend: {
-      outputPath: ${q(`${project.libDir}/fetchBackend.ts`)},
-      timeout: 15000,
-    },
-  },
-];
-`;
-
-  writeFileSync(configPath, starter, 'utf-8');
-  console.log(`\n${ok(`Configuration file generated: ${configPath}`)}`);
-  console.log(`\n  Next Steps:\n`);
-  console.log(`  1. Edit the file: set your "spec" URL and "apiEnvVar".`);
-  console.log(`  2. Run ${c.cyan}npx openapi-gen generate${c.reset}.\n`);
-}
-
-// ─── Shared by generate / diff ────────────────────────────────────────────────
-
-/** Validates every entry, fills defaults and loads the specs. Exits on invalid config. */
+/** Loads and validates the config, then loads, filters and resolves every spec. */
 async function prepare(configPath) {
-  const rawConfigs = await loadConfig(configPath);
   const generators = await loadGenerators();
+  const raw = await loadConfig(configPath);
+  validateConfig(raw, generators.isApisConfig);
 
-  let allValid = true;
-  rawConfigs.forEach((cfg, i) => { if (!validateConfig(cfg, i)) allValid = false; });
-  if (!allValid) {
-    console.error(`\n${c.red}Fix the errors above and try again.${c.reset}\n`);
-    process.exit(1);
-  }
-
-  const names = rawConfigs.map((cfg) => cfg.name).filter(Boolean);
-  const dupName = names.find((n, i) => names.indexOf(n) !== i);
-  if (dupName) {
-    console.error(`\n${err(`Two APIs are named "${dupName}" — give each entry a unique name.`)}\n`);
-    process.exit(1);
-  }
-
+  const normalized = generators.normalizeConfig(raw);
   const entries = [];
-  for (const cfg of rawConfigs.map(resolveConfig)) {
+  for (const api of normalized.apis) {
     try {
-      entries.push({ cfg, spec: await generators.fetchSpec(cfg.spec), error: null });
+      const fullSpec = await generators.fetchSpec(api.spec);
+      const resolved = generators.resolveWithSpec(api, fullSpec);
+      entries.push({ api: resolved, spec: generators.filterSpec(fullSpec, api.include, api.exclude), error: null });
     } catch (e) {
-      entries.push({ cfg, spec: null, error: e.message });
+      entries.push({ api, spec: null, error: e.message });
     }
   }
-  return { generators, entries };
+  return { generators, normalized, entries };
 }
 
-/** Files a helper (apiClient / fetchBackend) is written to, or null when disabled. */
-function helperPath(cfg, key, fallback) {
-  if (cfg[key] === false) return null;
-  if (key === 'fetchBackend' && cfg.framework === 'react') return null;
-  return toPosix(cfg[key]?.outputPath ?? fallback);
+const DEFAULT_HELPER = { apiClient: 'src/lib/apiClient.ts', fetchBackend: 'src/lib/fetchBackend.ts' };
+
+/** File a helper (apiClient / fetchBackend) is written to by this API, or null when disabled. */
+function helperPath(api, key) {
+  if (!api[key]) return null;
+  return toPosix(api[key].outputPath ?? DEFAULT_HELPER[key]);
+}
+
+const countOps = (spec) => Object.values(spec?.paths ?? {}).reduce(
+  (n, item) => n + Object.keys(item ?? {}).filter((m) => ['get', 'post', 'put', 'patch', 'delete'].includes(m)).length, 0);
+
+function planFor(generators, { api, spec }) {
+  return generators.planOutputFiles({ ...api, spec, barrel: api.barrel });
 }
 
 /** Generated files currently on disk under `dir` (identified by the auto-generated header). */
@@ -881,34 +394,31 @@ function scanGeneratedFiles(cwd, dir, header, found = new Set()) {
   const abs = join(cwd, dir);
   if (!existsSync(abs)) return found;
   for (const entry of readdirSync(abs, { withFileTypes: true })) {
-    const rel = toPosix(join(dir, entry.name));
-    if (entry.isDirectory()) {
-      scanGeneratedFiles(cwd, rel, header, found);
-    } else if (entry.name.endsWith('.ts')) {
-      try {
-        if (readFileSync(join(cwd, rel), 'utf-8').startsWith(header)) found.add(rel);
-      } catch { /* unreadable — not ours */ }
+    const file = toPosix(join(dir, entry.name));
+    if (entry.isDirectory()) scanGeneratedFiles(cwd, file, header, found);
+    else if (entry.name.endsWith('.ts')) {
+      try { if (readFileSync(join(cwd, file), 'utf-8').startsWith(header)) found.add(file); } catch { /* not ours */ }
     }
   }
   return found;
 }
 
-/** Generated files on disk that no config entry would produce anymore. */
+/** Generated files on disk that no API would produce anymore. */
 function findStaleFiles(cwd, entries, planned, header) {
   const dirs = new Set();
-  for (const { cfg } of entries) {
-    if (cfg.framework !== 'react') dirs.add(toPosix(cfg.routesOut));
-    dirs.add(toPosix(cfg.servicesOut));
-    if (cfg.framework === 'react') dirs.add(toPosix(cfg.hooksOut));
+  for (const { api } of entries) {
+    if (api.framework !== 'react') dirs.add(toPosix(api.routesOut));
+    dirs.add(toPosix(api.servicesOut));
+    if (api.framework === 'react') dirs.add(toPosix(api.hooksOut));
   }
   const onDisk = new Set();
   for (const dir of dirs) scanGeneratedFiles(cwd, dir, header, onDisk);
   return [...onDisk].filter((f) => !planned.has(f)).sort();
 }
 
-function removeEmptyDirs(cwd, file, stopAt) {
+function removeEmptyDirs(cwd, file, roots) {
   let dir = dirname(join(cwd, file));
-  const stops = new Set(stopAt.map((d) => join(cwd, d)));
+  const stops = new Set(roots.map((d) => join(cwd, d)));
   while (dir.startsWith(cwd) && !stops.has(dir) && dir !== cwd) {
     try {
       if (readdirSync(dir).length) return;
@@ -919,89 +429,78 @@ function removeEmptyDirs(cwd, file, stopAt) {
 }
 
 /** Packages the generated code imports that are missing from package.json. */
-function missingDependencies(cwd, entries) {
+function missingDependencies(cwd, apis) {
   const project = detectProject(cwd);
   if (!project.hasPackageJson) return null;
   const need = new Set();
   const needDev = new Set();
-
-  for (const { cfg } of entries) {
+  for (const api of apis) {
     need.add('axios');
-    const apiClientCookie = cfg.apiClient !== false && (cfg.apiClient?.cookieName ?? cfg.cookieName);
-    if (apiClientCookie) { need.add('js-cookie'); needDev.add('@types/js-cookie'); }
-    if (cfg.framework !== 'react' && cfg.fetchBackend !== false) need.add('server-only');
-    if (cfg.framework === 'react' && cfg.hooksMode === 'react-query') need.add('@tanstack/react-query');
+    if (api.apiClient && api.apiClient.cookieName) { need.add('js-cookie'); needDev.add('@types/js-cookie'); }
+    if (api.framework !== 'react' && api.fetchBackend) need.add('server-only');
+    if (api.framework === 'react' && api.hooksMode === 'react-query') need.add('@tanstack/react-query');
   }
-
   const missing = [...need].filter((p) => !project.deps[p]);
   const missingDev = [...needDev].filter((p) => !project.deps[p]);
   if (!missing.length && !missingDev.length) return null;
-  return {
-    commands: [
-      missing.length ? installCommand(project.packageManager, missing, false) : null,
-      missingDev.length ? installCommand(project.packageManager, missingDev, true) : null,
-    ].filter(Boolean),
-  };
+  return [
+    missing.length ? installCommand(project.packageManager, missing, false) : null,
+    missingDev.length ? installCommand(project.packageManager, missingDev, true) : null,
+  ].filter(Boolean);
 }
 
-// ─── Generate ─────────────────────────────────────────────────────────────────
+// ─── generate ─────────────────────────────────────────────────────────────────
+
+/**
+ * Generates every file. Returns { ok, missingPackages } — throws CliError when the config is
+ * invalid or APIs collide (nothing is written in that case).
+ */
 async function runGenerate(configPath, { prune = false } = {}) {
   const started = Date.now();
-  const { generators, entries } = await prepare(configPath);
+  const cwd = process.cwd();
+  const { generators, normalized, entries } = await prepare(configPath);
   const {
     generateRoutes, generateRoutesPages, generateServices, generateApiClient,
-    generateFetchBackend, generateHooks, planOutputFiles, GENERATED_HEADER,
+    generateFetchBackend, generateHooks, GENERATED_HEADER,
   } = generators;
 
-  const cwd = process.cwd();
-  console.log(`\n${c.bold}openapi-gen${c.reset} ${dim(`v${version} — ${relative(cwd, configPath) || configPath}`)}\n`);
+  console.log(`\n${c.bold}openapi-gen${c.reset} ${dim(`v${version} — ${rel(configPath)}`)}\n`);
 
-  // ── 1. Plan every file up front: nothing is written if two APIs would collide ──
-  const owners = new Map(); // file → config names that would write it
-  const claim = (file, name) => {
-    if (!owners.has(file)) owners.set(file, []);
-    if (!owners.get(file).includes(name)) owners.get(file).push(name);
-  };
+  // ── 1. Plan every file first: nothing is written if two APIs would collide ──
+  const owners = new Map();
   const plans = new Map();
   for (const entry of entries) {
     if (!entry.spec) continue;
-    const plan = planOutputFiles({ ...entry.cfg, spec: entry.spec });
+    const plan = planFor(generators, entry);
     plans.set(entry, plan);
-    for (const f of [...plan.routes, ...plan.services, ...plan.hooks]) claim(f, entry.cfg.name);
+    for (const f of [...plan.routes, ...plan.services, ...plan.hooks]) {
+      owners.set(f, [...new Set([...(owners.get(f) ?? []), entry.api.name])]);
+    }
   }
-
   const collisions = [...owners].filter(([, names]) => names.length > 1);
   if (collisions.length) {
     console.error(err(`${collisions.length} file(s) would be written by more than one API — nothing was generated:\n`));
-    for (const [file, names] of collisions.slice(0, 10)) {
-      console.error(`    ${file}  ${dim(`← ${names.join(', ')}`)}`);
-    }
+    for (const [file, names] of collisions.slice(0, 10)) console.error(`    ${file}  ${dim(`← ${names.join(', ')}`)}`);
     if (collisions.length > 10) console.error(dim(`    …and ${collisions.length - 10} more`));
-    console.error(`\n  ${tip('Give each API its own folders, e.g.:')}`);
-    console.error(dim(`      routesOut: 'src/app/api/<name>',  servicesOut: 'src/services/<name>'\n`));
-    process.exit(1);
+    console.error(`\n  ${tip('Give each API its own folders:')} ${dim(normalized.format === 'apis'
+      ? "apis: { payments: { spec, output: { routes: 'src/app/api/payments', services: 'src/services/payments' } } }"
+      : "routesOut: 'src/app/api/<name>', servicesOut: 'src/services/<name>'")}\n`);
+    throw new CliError();
   }
 
-  // Two entries generating the same helper with different options: the last one would win silently
-  const sharedFiles = { apiClient: 'src/lib/apiClient.ts', fetchBackend: 'src/lib/fetchBackend.ts' };
-  for (const key of Object.keys(sharedFiles)) {
+  // Two APIs generating the same helper with different options: the last one would win silently
+  for (const key of ['apiClient', 'fetchBackend']) {
     const writers = new Map();
-    for (const { cfg } of entries) {
-      const file = helperPath(cfg, key, sharedFiles[key]);
-      if (file) writers.set(file, [...(writers.get(file) ?? []), cfg.name]);
+    for (const { api } of entries) {
+      const file = helperPath(api, key);
+      if (file) writers.set(file, [...(writers.get(file) ?? []), api.name]);
     }
     for (const [file, names] of writers) {
-      if (names.length > 1) {
-        console.log(warn(`${file} is generated by ${names.join(' and ')} — the last one wins. Set ${key}: false on the others.\n`));
-      }
+      if (names.length > 1) console.log(warn(`${file} is generated by ${names.join(' and ')} — the last one wins. Set ${key}: false on the others.\n`));
     }
   }
-
-  // Entries with apiClient/fetchBackend: false reuse the helper generated by another entry
-  const firstHelper = (key) =>
-    entries.map(({ cfg }) => helperPath(cfg, key, sharedFiles[key])).find(Boolean) ?? sharedFiles[key];
-  const sharedApiClientFile = firstHelper('apiClient');
-  const sharedFetchBackendFile = firstHelper('fetchBackend');
+  // APIs that don't generate a helper import the one generated by another API
+  const sharedHelper = (key) => entries.map(({ api }) => helperPath(api, key)).find(Boolean) ?? DEFAULT_HELPER[key];
 
   // ── 2. Write ──────────────────────────────────────────────────────────────────
   let totalRoutes = 0;
@@ -1010,33 +509,24 @@ async function runGenerate(configPath, { prune = false } = {}) {
   let errors = 0;
 
   for (const entry of entries) {
-    const { cfg } = entry;
-    const {
-      name, framework, routesOut, servicesOut, hooksOut, hooksMode, apiEnvVar, apiFallback,
-      stripPathPrefix, apiClientPath, cookieName, apiClient: apiClientOpts, fetchBackend: fetchBackendOpts,
-    } = cfg;
+    const { api, spec } = entry;
+    const isReact = api.framework === 'react';
+    const isPages = api.framework === 'nextjs-pages';
+    const backendPrefix = api.fullBackendPath ? api.stripPathPrefix : '';
 
-    const isReact       = framework === 'react';
-    const isNextjsPages = framework === 'nextjs-pages';
-    const apiClientFile    = helperPath(cfg, 'apiClient', sharedFiles.apiClient) ?? sharedApiClientFile;
-    const fetchBackendFile = helperPath(cfg, 'fetchBackend', sharedFiles.fetchBackend) ?? sharedFetchBackendFile;
-
-    console.log(`${c.bold}${c.cyan}[${name}]${c.reset} ${dim(`(${framework}) ${cfg.spec}`)}`);
-
-    if (!entry.spec) {
+    console.log(`${c.bold}${c.cyan}[${api.name}]${c.reset} ${dim(`(${api.framework}) ${api.spec}`)}`);
+    if (!spec) {
       console.error(`  ${err(entry.error)}\n`);
       errors++;
       continue;
     }
-
-    const opCount = Object.values(entry.spec.paths ?? {}).reduce(
-      (n, item) => n + Object.keys(item ?? {}).filter((m) => ['get', 'post', 'put', 'patch', 'delete'].includes(m)).length, 0);
-    console.log(`  ${dim(`${opCount} operations in spec`)}`);
+    const filtered = api.include || api.exclude ? ' (after include/exclude)' : '';
+    console.log(`  ${dim(`${countOps(spec)} endpoints${filtered}`)}`);
 
     const step = async (label, fn) => {
       try {
         const result = await fn();
-        if (label) console.log(`  ${ok(label(result))}`);
+        console.log(`  ${ok(label(result))}`);
         return result;
       } catch (e) {
         console.error(`  ${err(e.message)}`);
@@ -1045,36 +535,45 @@ async function runGenerate(configPath, { prune = false } = {}) {
       }
     };
 
-    if (apiClientOpts !== false) {
-      await step((f) => f, () => generateApiClient({ cookieName, ...(apiClientOpts ?? {}) }, cwd));
+    if (api.apiClient) {
+      await step((f) => f, () => generateApiClient({ ...api.apiClient }, cwd));
     }
-    if (!isReact && fetchBackendOpts !== false) {
-      await step((f) => f, () => generateFetchBackend({ cookieName, framework, ...(fetchBackendOpts ?? {}) }, cwd));
+    if (!isReact && api.fetchBackend) {
+      await step((f) => f, () => generateFetchBackend({ ...api.fetchBackend, framework: api.framework }, cwd));
     }
 
     if (!isReact) {
-      const generate = isNextjsPages ? generateRoutesPages : generateRoutes;
+      const generate = isPages ? generateRoutesPages : generateRoutes;
       const files = await step(
-        (files) => `${String(files.length).padEnd(3)} ${isNextjsPages ? 'API routes' : 'route handlers'}  →  ${routesOut}/`,
-        () => generate({ spec: entry.spec, stripPathPrefix, apiEnvVar, apiFallback, routesOut, fetchBackendFile, cwd }),
+        (files) => `${String(files.length).padEnd(3)} ${isPages ? 'API routes' : 'route handlers'}  →  ${api.routesOut}/`,
+        () => generate({
+          spec, stripPathPrefix: api.stripPathPrefix, apiEnvVar: api.apiEnvVar, apiFallback: api.apiFallback,
+          routesOut: api.routesOut, fetchBackendFile: sharedHelper('fetchBackend'), backendPrefix, cwd,
+        }),
       );
       totalRoutes += files?.length ?? 0;
     }
 
     const serviceFiles = await step(
-      (files) => `${String(files.length / 2).padEnd(3)} services        →  ${servicesOut}/`,
-      () => generateServices({ spec: entry.spec, stripPathPrefix, servicesOut, apiClientPath, apiClientFile, routesOut, framework, cwd }),
+      (files) => `${String(files.filter((f) => f.endsWith('types.ts')).length).padEnd(3)} services        →  ${api.servicesOut}/`,
+      () => generateServices({
+        spec, stripPathPrefix: api.stripPathPrefix, servicesOut: api.servicesOut, apiClientPath: api.apiClientPath,
+        apiClientFile: sharedHelper('apiClient'), routesOut: api.routesOut, framework: api.framework,
+        baseUrl: api.servicesBaseUrl, backendPrefix, barrel: api.barrel, cwd,
+      }),
     );
-    totalServices += (serviceFiles?.length ?? 0) / 2;
+    totalServices += serviceFiles?.filter((f) => f.endsWith('types.ts')).length ?? 0;
 
     if (isReact) {
       const hookFiles = await step(
-        (files) => `${String(files.length).padEnd(3)} hook files      →  ${hooksOut}/`,
-        () => generateHooks({ spec: entry.spec, stripPathPrefix, hooksOut, servicesOut, hooksMode, cwd }),
+        (files) => `${String(files.length).padEnd(3)} hook files      →  ${api.hooksOut}/`,
+        () => generateHooks({
+          spec, stripPathPrefix: api.stripPathPrefix, hooksOut: api.hooksOut, servicesOut: api.servicesOut,
+          hooksMode: api.hooksMode, cwd,
+        }),
       );
       totalHooks += hookFiles?.length ?? 0;
     }
-
     console.log('');
   }
 
@@ -1083,7 +582,7 @@ async function runGenerate(configPath, { prune = false } = {}) {
     const planned = new Set([...plans.values()].flatMap((p) => [...p.routes, ...p.services, ...p.hooks]));
     const stale = findStaleFiles(cwd, entries, planned, GENERATED_HEADER);
     if (stale.length && prune) {
-      const roots = entries.flatMap(({ cfg }) => [cfg.routesOut, cfg.servicesOut, cfg.hooksOut]);
+      const roots = entries.flatMap(({ api }) => [api.routesOut, api.servicesOut, api.hooksOut]);
       for (const file of stale) {
         rmSync(join(cwd, file));
         removeEmptyDirs(cwd, file, roots);
@@ -1099,62 +598,144 @@ async function runGenerate(configPath, { prune = false } = {}) {
     }
   }
 
-  // ── 4. Summary + missing packages ─────────────────────────────────────────────
+  // ── 4. afterGenerate commands (formatters, linters) ──────────────────────────
+  if (!errors) {
+    for (const command of normalized.afterGenerate) {
+      console.log(tip(`${command}`));
+      const r = spawnSync(command, { cwd, shell: true, stdio: 'inherit' });
+      if (r.status !== 0) {
+        console.error(err(`"${command}" exited with code ${r.status}`));
+        errors++;
+      }
+    }
+    if (normalized.afterGenerate.length) console.log('');
+  }
+
+  // ── 5. Summary + missing packages ─────────────────────────────────────────────
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
-  if (errors > 0) {
+  if (errors) {
     console.log(`${c.yellow}${c.bold}Completed with ${errors} error(s)${c.reset} ${dim(`in ${seconds}s`)}\n`);
   } else {
     const parts = [];
-    if (totalRoutes > 0)   parts.push(`${totalRoutes} routes`);
-    if (totalServices > 0) parts.push(`${totalServices} services`);
-    if (totalHooks > 0)    parts.push(`${totalHooks} hook files`);
+    if (totalRoutes) parts.push(`${totalRoutes} routes`);
+    if (totalServices) parts.push(`${totalServices} services`);
+    if (totalHooks) parts.push(`${totalHooks} hook files`);
     console.log(`${c.green}${c.bold}Done!${c.reset} ${dim(`${parts.join(' · ')} in ${seconds}s`)}\n`);
   }
 
-  const missing = missingDependencies(cwd, entries.filter((e) => e.spec));
-  if (missing) {
+  const missingPackages = missingDependencies(cwd, entries.filter((e) => e.spec).map((e) => e.api));
+  if (missingPackages) {
     console.log(warn('The generated code needs packages that are not in your package.json:'));
-    for (const cmd of missing.commands) console.log(`    ${c.cyan}${cmd}${c.reset}`);
+    for (const cmd of missingPackages) console.log(`    ${c.cyan}${cmd}${c.reset}`);
     console.log('');
   }
 
-  if (errors > 0) process.exitCode = 1;
+  if (errors) process.exitCode = 1;
+  return { ok: !errors, missingPackages };
 }
 
-// ─── Diff ─────────────────────────────────────────────────────────────────────
+// ─── generate --watch ─────────────────────────────────────────────────────────
+
+async function runWatch(configPath, options) {
+  const REMOTE_POLL_MS = 10_000;
+  let running = false;
+  let queued = false;
+  let watched = new Set();
+  let remoteHashes = new Map();
+  let remoteTimer = null;
+
+  const hash = (text) => createHash('sha1').update(text).digest('hex');
+
+  async function specSources() {
+    try {
+      const generators = await loadGenerators();
+      const raw = await loadConfig(configPath);
+      return generators.normalizeConfig(raw).apis.map((a) => a.spec);
+    } catch {
+      return [];
+    }
+  }
+
+  async function regenerate(reason) {
+    if (running) { queued = true; return; }
+    running = true;
+    if (reason) console.log(`\n${tip(`${reason} — regenerating…`)}`);
+    try {
+      await runGenerate(configPath, options);
+    } catch (e) {
+      if (!(e instanceof CliError)) console.error(err(e.message));
+    }
+    await refreshWatchers();
+    running = false;
+    console.log(dim(`Watching for changes… (Ctrl+C to stop)`));
+    if (queued) { queued = false; await regenerate('Changes while generating'); }
+  }
+
+  async function refreshWatchers() {
+    const sources = await specSources();
+    const files = new Set([configPath, ...sources.filter((s) => !/^https?:\/\//i.test(s)).map((s) => resolve(s))]);
+    for (const f of watched) if (!files.has(f)) unwatchFile(f);
+    for (const f of files) {
+      if (watched.has(f)) continue;
+      watchFile(f, { interval: 500 }, (curr, prev) => {
+        if (curr.mtimeMs !== prev.mtimeMs) regenerate(`${rel(f)} changed`);
+      });
+    }
+    watched = files;
+
+    // Remote specs: poll and compare contents
+    const urls = sources.filter((s) => /^https?:\/\//i.test(s));
+    clearInterval(remoteTimer);
+    if (urls.length) {
+      for (const url of urls) {
+        if (!remoteHashes.has(url)) {
+          try { remoteHashes.set(url, hash(await (await fetch(url)).text())); } catch { /* retried on next poll */ }
+        }
+      }
+      remoteTimer = setInterval(async () => {
+        for (const url of urls) {
+          try {
+            const h = hash(await (await fetch(url)).text());
+            if (remoteHashes.get(url) !== h) {
+              remoteHashes.set(url, h);
+              regenerate(`${url} changed`);
+            }
+          } catch { /* backend restarting — try again on the next poll */ }
+        }
+      }, REMOTE_POLL_MS);
+    }
+  }
+
+  await regenerate();
+}
+
+// ─── diff ─────────────────────────────────────────────────────────────────────
+
 async function runDiff(configPath) {
   const { generators, entries } = await prepare(configPath);
-  const { planOutputFiles, GENERATED_HEADER } = generators;
-
   const cwd = process.cwd();
   let hasChanges = false;
   const planned = new Set();
 
   console.log(`\n${c.bold}openapi-gen diff${c.reset} ${dim('— spec vs disk')}\n`);
 
-  for (const { cfg, spec, error } of entries) {
-    console.log(`${c.bold}${c.cyan}[${cfg.name}]${c.reset} ${dim(`(${cfg.framework}) ${cfg.spec}`)}`);
+  for (const entry of entries) {
+    const { api, spec, error } = entry;
+    console.log(`${c.bold}${c.cyan}[${api.name}]${c.reset} ${dim(`(${api.framework}) ${api.spec}`)}`);
+    if (!spec) { console.error(`  ${err(error)}\n`); continue; }
 
-    if (!spec) {
-      console.error(`  ${err(error)}\n`);
-      continue;
-    }
-
-    const plan = planOutputFiles({ ...cfg, spec });
+    const plan = planFor(generators, entry);
     for (const f of [...plan.routes, ...plan.services, ...plan.hooks]) planned.add(f);
 
     const groups = [
       ['route file(s)', plan.routes],
-      ['service(s)', plan.services.filter((f) => f.endsWith('/index.ts'))],
+      ['service(s)', plan.services.filter((f) => f.endsWith('/index.ts') && f !== toPosix(join(api.servicesOut, 'index.ts')))],
       ['hook file(s)', plan.hooks],
     ].filter(([, files]) => files.length);
 
     for (const [label, files] of groups) {
       const added = files.filter((f) => !existsSync(join(cwd, f)));
-      if (!added.length) {
-        console.log(`  ${ok(`${files.length} ${label} up to date`)}`);
-        continue;
-      }
+      if (!added.length) { console.log(`  ${ok(`${files.length} ${label} up to date`)}`); continue; }
       hasChanges = true;
       console.log(`  ${c.green}+ ${added.length} new ${label} not yet generated:${c.reset}`);
       for (const f of added.slice(0, 20)) console.log(`    ${c.green}+${c.reset} ${dim(f)}`);
@@ -1166,7 +747,7 @@ async function runDiff(configPath) {
   }
 
   if (entries.every((e) => e.spec)) {
-    const stale = findStaleFiles(cwd, entries, planned, GENERATED_HEADER);
+    const stale = findStaleFiles(cwd, entries, planned, generators.GENERATED_HEADER);
     if (stale.length) {
       hasChanges = true;
       console.log(`${c.red}- ${stale.length} generated file(s) no longer in the spec:${c.reset}`);
@@ -1175,57 +756,560 @@ async function runDiff(configPath) {
     }
   }
 
-  if (hasChanges) {
-    console.log(`${c.yellow}Run ${c.cyan}npx openapi-gen generate${c.yellow} to apply changes${c.reset} ${dim('(add --prune to delete removed files).')}\n`);
-  } else {
-    console.log(`${c.green}${c.bold}Everything is up to date.${c.reset}\n`);
+  console.log(hasChanges
+    ? `${c.yellow}Run ${c.cyan}npx openapi-gen generate${c.yellow} to apply changes${c.reset} ${dim('(add --prune to delete removed files).')}\n`
+    : `${c.green}${c.bold}Everything is up to date.${c.reset}\n`);
+}
+
+// ─── info ─────────────────────────────────────────────────────────────────────
+
+/** Shows what the config resolves to: folders, backend URL variables, counts. */
+async function runInfo(configPath) {
+  const { generators, normalized, entries } = await prepare(configPath);
+  const env = new Map();
+
+  console.log(`\n${c.bold}openapi-gen info${c.reset} ${dim(`— ${rel(configPath)} (${normalized.format === 'apis' ? 'current format' : 'legacy list format'})`)}\n`);
+
+  for (const entry of entries) {
+    const { api, spec, error } = entry;
+    const isReact = api.framework === 'react';
+    console.log(`${c.bold}${c.cyan}[${api.name}]${c.reset} ${dim(api.framework)}`);
+    const row = (label, value) => console.log(`  ${dim(label.padEnd(15))} ${value}`);
+    row('spec', api.spec);
+    if (!spec) { console.log(`  ${err(error)}\n`); continue; }
+
+    const plan = planFor(generators, entry);
+    row('endpoints', `${countOps(spec)}${api.include || api.exclude ? dim(' (after include/exclude)') : ''}`);
+    row('path prefix', api.stripPathPrefix
+      ? `${api.stripPathPrefix} ${dim(api.fullBackendPath ? '(left out of file names, kept in backend calls)' : '(removed from file names and backend calls)')}`
+      : dim('none'));
+
+    const envVar = isReact ? api.servicesBaseUrl?.env : api.apiEnvVar;
+    const fallback = isReact ? api.servicesBaseUrl?.fallback : api.apiFallback;
+    if (!isReact || api.servicesBaseUrl) {
+      row('backend URL', `${c.yellow}${envVar}${c.reset}${fallback ? dim(`  (fallback: ${fallback})`) : dim('  (no fallback — the variable must be set)')}`);
+      env.set(envVar, fallback || '<backend-url>');
+    }
+    if (!isReact) row('routes', `${plan.routes.length} → ${api.routesOut}/`);
+    row('services', `${plan.services.filter((f) => f.endsWith('types.ts')).length} → ${api.servicesOut}/`);
+    if (isReact) row('hooks', `${plan.hooks.length} → ${api.hooksOut}/ ${dim(`(${api.hooksMode})`)}`);
+    const cookie = api.apiClient ? api.apiClient.cookieName : entries.find((e) => e.api.apiClient)?.api.apiClient.cookieName;
+    row('auth', cookie ? `cookie ${c.yellow}${cookie}${c.reset} → Authorization: Bearer` : dim('none'));
+    console.log('');
+  }
+
+  if (env.size) {
+    console.log(`${c.bold}.env${c.reset}`);
+    for (const [name, value] of env) console.log(`  ${name}=${value}`);
+    console.log('');
+  }
+  if (normalized.afterGenerate.length) {
+    console.log(`${c.bold}afterGenerate${c.reset}`);
+    for (const cmd of normalized.afterGenerate) console.log(`  ${cmd}`);
+    console.log('');
   }
 }
 
+// ─── run: interactive setup ───────────────────────────────────────────────────
+
+/** Short API name from the spec title: "Payments API" → "payments". */
+function nameFromSpec(spec) {
+  const words = String(spec?.info?.title ?? '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w && !['api', 'apis', 'rest', 'service', 'services', 'backend', 'server', 'the', 'openapi', 'swagger', 'v1', 'v2', 'v3'].includes(w));
+  return words.slice(0, 2).join('-').slice(0, 24) || 'api';
+}
+
+/** Asks for the spec until it loads (or the user keeps an unreachable one). */
+async function askSpec(prompter, m, fetchSpec, defaultValue) {
+  while (true) {
+    const spec = await prompter.input({
+      question: m.spec.question,
+      help: m.spec.help,
+      defaultValue,
+      validate: (v) => (v ? null : m.spec.required),
+    });
+    try {
+      const parsed = await fetchSpec(spec);
+      const tags = new Set();
+      for (const item of Object.values(parsed.paths ?? {})) {
+        for (const op of Object.values(item ?? {})) for (const t of op?.tags ?? []) tags.add(t);
+      }
+      console.log(`  ${ok(m.spec.loaded(parsed.info?.title ?? spec, countOps(parsed), Math.max(tags.size, 1)))}`);
+      return { spec, parsed };
+    } catch (e) {
+      console.log(`  ${err(e.message)}`);
+      if (await prompter.confirm({ question: m.spec.useAnyway, defaultValue: false })) return { spec, parsed: null };
+      defaultValue = undefined;
+    }
+  }
+}
+
+/** The config file written by `run`, with comments in the chosen language. */
+function renderConfigFile({ m, framework, hooks, cookie, output, apis }) {
+  const out = [
+    `// ${m.cfg.header}`,
+    `// ${m.cfg.docs}`,
+    '',
+    "/** @type {import('codegen-openapi').Config} */",
+    'export default {',
+    `  // ${m.cfg.framework}`,
+    `  framework: ${q(framework)},`,
+  ];
+  if (framework === 'react' && hooks !== 'react-query') {
+    out.push('', `  // ${m.cfg.hooks}`, `  hooks: ${q(hooks)},`);
+  }
+  out.push('');
+  if (cookie) out.push(`  // ${m.cfg.auth}`, `  auth: { cookie: ${q(cookie)} },`);
+  else out.push(`  // ${m.cfg.noAuth}`, `  // auth: { cookie: 'accessToken' },`);
+
+  const outputEntries = Object.entries(output).filter(([, v]) => v !== undefined);
+  if (outputEntries.length) {
+    out.push('', `  // ${m.cfg.output}`, '  output: {');
+    for (const [k, v] of outputEntries) out.push(`    ${k}: ${q(v)},`);
+    out.push('  },');
+  }
+
+  out.push('', `  // ${m.cfg.apis}`, '  apis: {');
+  for (const api of apis) {
+    const baseUrl = api.fallback ? `{ env: ${q(api.env)}, fallback: ${q(api.fallback)} }` : `{ env: ${q(api.env)} }`;
+    out.push(
+      `    ${/^[A-Za-z_$][\w$]*$/.test(api.name) ? api.name : q(api.name)}: {`,
+      `      spec: ${q(api.spec)}, // ${m.cfg.spec}`,
+      `      // ${m.cfg.baseUrl}`,
+      `      baseUrl: ${baseUrl},`,
+      '    },',
+    );
+  }
+  out.push('  },', '};', '');
+  return out.join('\n');
+}
+
+/** Output folders that differ from the defaults, so the written config stays short. */
+function outputOverrides(project, framework) {
+  const defaults = {
+    routes: framework === 'nextjs-pages' ? 'pages/api' : 'src/app/api',
+    services: 'src/services',
+    hooks: 'src/hooks',
+    lib: 'src/lib',
+  };
+  const detected = {
+    routes: project.output.routes[framework],
+    services: project.output.services,
+    hooks: framework === 'react' ? project.output.hooks : undefined,
+    lib: project.output.lib,
+  };
+  return Object.fromEntries(Object.entries(detected).filter(([k, v]) => v !== undefined && v !== defaults[k]));
+}
+
+/** Shows what the answers will produce and asks to save. Returns 'generate' | 'save' | 'cancel'. */
+async function review(prompter, m, generators, { configPath, text, rawConfig, parsedSpecs }) {
+  console.log(`\n  ${c.bold}${m.summary.config(rel(configPath))}${c.reset}\n`);
+  for (const l of text.trimEnd().split('\n')) console.log(`    ${dim(l)}`);
+
+  // Preview the plan with the same normalization the generator uses
+  const normalized = generators.normalizeConfig(rawConfig);
+  const env = new Map();
+  const lines = [];
+  normalized.apis.forEach((api, i) => {
+    const spec = parsedSpecs[i];
+    const resolved = spec ? generators.resolveWithSpec(api, spec) : api;
+    const isReact = api.framework === 'react';
+    if (spec) {
+      const plan = generators.planOutputFiles({ ...resolved, spec, barrel: api.barrel });
+      if (!isReact) lines.push(m.summary.routes(plan.routes.length, resolved.routesOut));
+      lines.push(m.summary.services(plan.services.filter((f) => f.endsWith('types.ts')).length, resolved.servicesOut));
+      if (isReact) lines.push(m.summary.hooks(plan.hooks.length, resolved.hooksOut));
+      if (resolved.stripPathPrefix) lines.push(m.summary.prefix(resolved.stripPathPrefix));
+    }
+    const envVar = isReact ? resolved.servicesBaseUrl?.env : resolved.apiEnvVar;
+    env.set(envVar, (isReact ? resolved.servicesBaseUrl?.fallback : resolved.apiFallback) || '<backend-url>');
+  });
+  const lib = normalized.apis[0]?.apiClient ? dirname(normalized.apis[0].apiClient.outputPath) : null;
+  if (lib) lines.push(m.summary.helpers(toPosix(lib)));
+
+  if (lines.length) {
+    console.log(`\n  ${c.bold}${m.summary.generate}${c.reset}`);
+    for (const l of lines) console.log(`    ${c.green}•${c.reset} ${l}`);
+  }
+  console.log(`\n  ${c.bold}${m.summary.env}${c.reset}`);
+  for (const [name, value] of env) console.log(`    ${c.yellow}${name}${c.reset}=${value}`);
+  console.log('');
+
+  return prompter.choose({
+    question: m.summary.question,
+    options: [
+      { value: 'generate', label: m.summary.saveAndGenerate },
+      { value: 'save', label: m.summary.saveOnly },
+      { value: 'cancel', label: m.cancel },
+    ],
+    defaultValue: 'generate',
+  });
+}
+
+/** Generates, then offers to install the packages the generated code needs. */
+async function generateAndOfferInstall(configPath, prompter, m, flags) {
+  let result;
+  try {
+    result = await runGenerate(configPath);
+  } catch (e) {
+    if (e instanceof CliError) return;
+    throw e;
+  }
+  // --yes never installs on its own: it would change package.json and hit the network in CI
+  if (result.missingPackages && !flags.yes && await prompter.confirm({ question: m.installQuestion, defaultValue: true })) {
+    for (const cmd of result.missingPackages) {
+      console.log(tip(cmd));
+      spawnSync(cmd, { cwd: process.cwd(), shell: true, stdio: 'inherit' });
+    }
+    console.log('');
+  }
+}
+
+/**
+ * One prompter per command (piped input is read once), plus the language: --lang, else asked
+ * with the OS language as the default.
+ */
+async function startSession(flags) {
+  const session = { lang: detectLanguage(flags.lang) };
+  session.prompter = createPrompter({ style, t: () => messages[session.lang], yes: flags.yes });
+  if (!flags.lang && !flags.yes) {
+    console.log('');
+    session.lang = await session.prompter.choose({
+      question: messages.en.languageQuestion,
+      options: [
+        { value: 'en', label: 'English' },
+        { value: 'pt', label: 'Português (Brasil)' },
+      ],
+      defaultValue: session.lang,
+    });
+  }
+  session.m = messages[session.lang];
+  return session;
+}
+
+async function runWizard(configPath, flags) {
+  const { prompter, m } = await startSession(flags);
+  const generators = await loadGenerators();
+  const project = detectProject(process.cwd());
+
+  try {
+    console.log(`\n${line()}\n  ${c.bold}${c.cyan}openapi-gen${c.reset} ${dim(`v${version}`)}\n${line()}`);
+    console.log(`\n  ${m.intro(c.cyan + rel(configPath) + c.reset)}`);
+    console.log(`  ${dim(m.introTips)}\n`);
+
+    if (existsSync(configPath)) {
+      const action = await prompter.choose({
+        question: m.exists(rel(configPath)),
+        options: [
+          { value: 'add', label: m.existsAdd },
+          { value: 'overwrite', label: m.existsOverwrite },
+          { value: 'cancel', label: m.cancel },
+        ],
+        defaultValue: 'add',
+      });
+      if (action === 'cancel') { console.log(`\n  ${m.cancelled}\n`); return; }
+      if (action === 'add') { await addApi(configPath, prompter, m, generators, flags); return; }
+      console.log('');
+    }
+
+    // ── Framework ──
+    const framework = await (async () => {
+      const isReactDefault = project.framework === 'react';
+      const total = isReactDefault ? 6 : 5;
+      console.log(`${c.bold}${m.step(1, total, m.framework.title)}${c.reset}`);
+      return prompter.choose({
+        question: m.framework.question,
+        help: m.framework.help,
+        note: project.framework ? m.detected : undefined,
+        options: ['nextjs', 'nextjs-pages', 'react'].map((value) => ({
+          value, label: m.framework.options[value][0], hint: m.framework.options[value][1],
+        })),
+        defaultValue: project.framework ?? 'nextjs',
+      });
+    })();
+    const isReact = framework === 'react';
+    const total = isReact ? 6 : 5;
+    let n = 1;
+
+    // ── Hooks (React) ──
+    let hooks = 'react-query';
+    if (isReact) {
+      console.log(`\n${c.bold}${m.step(++n, total, m.hooks.title)}${c.reset}`);
+      hooks = await prompter.choose({
+        question: m.hooks.question,
+        help: m.hooks.help,
+        options: ['react-query', 'fetch'].map((value) => ({ value, label: m.hooks.options[value][0], hint: m.hooks.options[value][1] })),
+        defaultValue: project.deps['@tanstack/react-query'] || !project.hasPackageJson ? 'react-query' : 'fetch',
+      });
+    }
+
+    // ── Spec ──
+    console.log(`\n${c.bold}${m.step(++n, total, m.spec.title)}${c.reset}`);
+    const { spec, parsed } = await askSpec(prompter, m, generators.fetchSpec, flags.spec);
+
+    // ── Name ──
+    console.log(`\n${c.bold}${m.step(++n, total, m.name.title)}${c.reset}`);
+    const name = await prompter.input({
+      question: m.name.question,
+      help: m.name.help,
+      defaultValue: nameFromSpec(parsed),
+      validate: (v) => (/^[A-Za-z0-9_-]+$/.test(v) ? null : m.name.invalid),
+    });
+
+    // ── Backend URL ──
+    console.log(`\n${c.bold}${m.step(++n, total, m.baseUrl.title)}${c.reset}`);
+    const env = await prompter.input({
+      question: m.baseUrl.envQuestion,
+      help: m.baseUrl.help(isReact),
+      defaultValue: isReact ? 'VITE_API_URL' : 'API_URL',
+      validate: (v) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(v) ? null : m.baseUrl.invalidEnv),
+    });
+    const fallback = await prompter.input({
+      question: m.baseUrl.fallbackQuestion,
+      help: m.baseUrl.help(isReact),
+      defaultValue: parsed ? generators.suggestBaseUrl(parsed, spec) : '',
+    });
+
+    // ── Auth ──
+    console.log(`\n${c.bold}${m.step(++n, total, m.auth.title)}${c.reset}`);
+    const cookie = await prompter.input({ question: m.auth.question, help: m.auth.help });
+
+    // ── Review ──
+    console.log(`\n${c.bold}${m.summary.title}${c.reset}`);
+    const output = outputOverrides(project, framework);
+    const apis = [{ name, spec, env, fallback }];
+    const text = renderConfigFile({ m, framework, hooks, cookie, output, apis });
+    const rawConfig = {
+      framework,
+      ...(isReact ? { hooks } : {}),
+      ...(cookie ? { auth: { cookie } } : {}),
+      ...(Object.keys(output).length ? { output } : {}),
+      apis: { [name]: { spec, baseUrl: { env, fallback: fallback || undefined } } },
+    };
+    const action = await review(prompter, m, generators, { configPath, text, rawConfig, parsedSpecs: [parsed] });
+    if (action === 'cancel') { console.log(`\n  ${m.cancelled}\n`); return; }
+
+    writeFileSync(configPath, text, 'utf-8');
+    console.log(`\n  ${ok(m.saved(rel(configPath)))}`);
+    if (action === 'generate') await generateAndOfferInstall(configPath, prompter, m, flags);
+
+    if (!flags.yes && await prompter.confirm({ question: m.anotherQuestion, defaultValue: false })) {
+      console.log('');
+      await addApi(configPath, prompter, m, generators, flags);
+      return;
+    }
+    console.log(`\n  ${m.done}\n`);
+  } finally {
+    prompter.close();
+  }
+}
+
+// ─── add ──────────────────────────────────────────────────────────────────────
+
+async function runAdd(configPath, flags) {
+  const { prompter, m } = await startSession(flags);
+  try {
+    await addApi(configPath, prompter, m, await loadGenerators(), flags);
+  } finally {
+    prompter.close();
+  }
+}
+
+/** Connects another API (and keeps going while the user wants to add more). */
+async function addApi(configPath, prompter, m, generators, flags) {
+  if (!existsSync(configPath)) {
+    console.error(`\n${err(`Config file not found: ${rel(configPath)}`)}`);
+    console.error(`  Run ${c.cyan}npx openapi-gen run${c.reset} first.\n`);
+    throw new CliError();
+  }
+
+  while (true) {
+    const raw = await loadConfig(configPath);
+    validateConfig(raw, generators.isApisConfig);
+    const isApis = generators.isApisConfig(raw);
+    const existing = isApis ? Object.keys(raw.apis) : (Array.isArray(raw) ? raw : [raw]).map((e) => e.name).filter(Boolean);
+    const framework = (isApis ? raw.framework : (Array.isArray(raw) ? raw[0] : raw)?.framework) ?? 'nextjs';
+    const isReact = framework === 'react';
+
+    console.log(`${line()}\n  ${c.bold}${c.cyan}openapi-gen${c.reset} ${c.bold}${m.addTitle}${c.reset}\n${line()}`);
+    console.log(`  ${m.adding(rel(configPath), existing.length)}`);
+    if (!isApis) console.log(`  ${dim(m.legacyNote)}`);
+    console.log('');
+
+    const total = 3;
+    console.log(`${c.bold}${m.step(1, total, m.spec.title)}${c.reset}`);
+    const { spec, parsed } = await askSpec(prompter, m, generators.fetchSpec, flags.spec);
+
+    console.log(`\n${c.bold}${m.step(2, total, m.name.title)}${c.reset}`);
+    let suggestion = nameFromSpec(parsed);
+    for (let i = 2; existing.includes(suggestion); i++) suggestion = `${nameFromSpec(parsed)}-${i}`;
+    const name = await prompter.input({
+      question: m.name.question,
+      help: m.name.help,
+      defaultValue: suggestion,
+      validate: (v) => (!/^[A-Za-z0-9_-]+$/.test(v) ? m.name.invalid : existing.includes(v) ? m.name.taken(v) : null),
+    });
+
+    console.log(`\n${c.bold}${m.step(3, total, m.baseUrl.title)}${c.reset}`);
+    const envBase = name.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    const env = await prompter.input({
+      question: m.baseUrl.envQuestion,
+      help: m.baseUrl.help(isReact),
+      defaultValue: isReact ? `VITE_${envBase}_API_URL` : `${envBase}_API_URL`,
+      validate: (v) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(v) ? null : m.baseUrl.invalidEnv),
+    });
+    const fallback = await prompter.input({
+      question: m.baseUrl.fallbackQuestion,
+      help: m.baseUrl.help(isReact),
+      defaultValue: parsed ? generators.suggestBaseUrl(parsed, spec) : '',
+    });
+
+    // Build the new entry for the file's format and preview the result
+    const source = readFileSync(configPath, 'utf-8');
+    let updated;
+    let rawConfig;
+    if (isApis) {
+      const entry = { spec, baseUrl: fallback ? { env, fallback } : { env } };
+      updated = generators.appendApiToConfig(source, name, entry);
+      rawConfig = { ...raw, apis: { ...raw.apis, [name]: entry } };
+    } else {
+      const base = Array.isArray(raw) ? raw[0] : raw;
+      const project = detectProject(process.cwd());
+      const prefix = parsed ? generators.suggestStripPrefix(parsed) : (base.stripPathPrefix ?? '/api');
+      const entry = {
+        name,
+        framework,
+        spec,
+        ...(isReact ? {} : { routesOut: `${project.output.routes[framework]}/${name}` }),
+        servicesOut: `${project.output.services}/${name}`,
+        ...(isReact ? { hooksOut: `${project.output.hooks}/${name}`, hooksMode: base.hooksMode ?? 'react-query' } : {}),
+        ...(isReact ? {} : { apiEnvVar: env }),
+        // The legacy format calls <apiFallback><path without prefix>
+        ...(!isReact && fallback ? { apiFallback: fallback.replace(/\/+$/, '') + prefix } : {}),
+        stripPathPrefix: prefix,
+        ...(base.cookieName ? { cookieName: base.cookieName } : {}),
+        apiClient: false,
+        ...(isReact ? {} : { fetchBackend: false }),
+      };
+      updated = generators.appendConfigEntry(source, entry);
+      rawConfig = [...(Array.isArray(raw) ? raw : [raw]), entry];
+    }
+
+    if (updated === null) {
+      console.log(`\n${warn(`Couldn't edit ${rel(configPath)} automatically — add this entry yourself:`)}\n`);
+      console.log(isApis
+        ? `    ${name}: { spec: ${q(spec)}, baseUrl: { env: ${q(env)}${fallback ? `, fallback: ${q(fallback)}` : ''} } },\n`
+        : generators.renderConfigEntry(rawConfig[rawConfig.length - 1]) + ',\n');
+      return;
+    }
+
+    console.log(`\n${c.bold}${m.summary.title}${c.reset}`);
+    const parsedSpecs = [];
+    const all = generators.normalizeConfig(rawConfig).apis;
+    for (let i = 0; i < all.length; i++) parsedSpecs.push(i === all.length - 1 ? parsed : null);
+    const action = await review(prompter, m, generators, { configPath, text: updated, rawConfig, parsedSpecs });
+    if (action === 'cancel') { console.log(`\n  ${m.cancelled}\n`); return; }
+
+    writeFileSync(configPath, updated, 'utf-8');
+    console.log(`\n  ${ok(m.saved(rel(configPath)))}`);
+    if (action === 'generate') await generateAndOfferInstall(configPath, prompter, m, flags);
+
+    if (flags.yes || !await prompter.confirm({ question: m.anotherQuestion, defaultValue: false })) {
+      console.log(`\n  ${m.done}\n`);
+      return;
+    }
+    flags = { ...flags, spec: undefined };
+    console.log('');
+  }
+}
+
+// ─── init ─────────────────────────────────────────────────────────────────────
+
+function runInit(configPath, flags) {
+  if (existsSync(configPath)) {
+    console.log(`\n${warn(`${rel(configPath)} already exists — nothing was written.`)}\n`);
+    return;
+  }
+  const lang = detectLanguage(flags.lang);
+  const m = messages[lang];
+  const project = detectProject(process.cwd());
+  const framework = project.framework ?? 'nextjs';
+  const text = renderConfigFile({
+    m,
+    framework,
+    hooks: 'react-query',
+    cookie: '',
+    output: outputOverrides(project, framework),
+    apis: [{
+      name: 'core',
+      spec: 'https://api.example.com/api-json',
+      env: framework === 'react' ? 'VITE_API_URL' : 'API_URL',
+      fallback: 'https://api.example.com',
+    }],
+  });
+  writeFileSync(configPath, text, 'utf-8');
+  console.log(`\n${ok(`Created ${rel(configPath)}`)}`);
+  console.log(`\n  1. Set ${c.cyan}spec${c.reset} to your OpenAPI URL or file.`);
+  console.log(`  2. Run ${c.cyan}npx openapi-gen generate${c.reset}.\n`);
+}
+
 // ─── Argument parsing ─────────────────────────────────────────────────────────
-const args = process.argv.slice(2);
 
-const configIdx = args.indexOf('--config');
-const configArg = configIdx !== -1 ? args[configIdx + 1] : null;
-// The value after --config is a path, not the command
-const command   = args.find((a, i) => !a.startsWith('-') && !(configIdx !== -1 && i === configIdx + 1)) ?? 'generate';
-const configPath = resolve(process.cwd(), configArg ?? 'openapi-gen.config.mjs');
-
-if (args.includes('--help') || args.includes('-h')) {
-  printHelp();
-  process.exit(0);
+function parseArgs(argv) {
+  const flags = { prune: false, watch: false, yes: false };
+  const positional = [];
+  const valueFlags = { '--config': 'config', '--lang': 'lang', '--spec': 'spec' };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (valueFlags[a]) {
+      const value = argv[i + 1];
+      if (!value || value.startsWith('-')) {
+        console.error(`\n${err(`${a} needs a value, e.g. ${a} ${a === '--lang' ? 'pt' : './openapi.json'}`)}\n`);
+        process.exit(1);
+      }
+      flags[valueFlags[a]] = value;
+      i++;
+    } else if (a === '--prune') flags.prune = true;
+    else if (a === '--watch' || a === '-w') flags.watch = true;
+    else if (a === '--yes' || a === '-y') flags.yes = true;
+    else if (a === '--help' || a === '-h') flags.help = true;
+    else if (a === '--version' || a === '-v') flags.version = true;
+    else if (a.startsWith('-')) {
+      console.error(`\n${err(`Unknown option: ${a}`)}`);
+      printHelp();
+      process.exit(1);
+    } else positional.push(a);
+  }
+  return { command: positional[0] ?? 'generate', flags };
 }
 
-if (args.includes('--version') || args.includes('-v')) {
-  console.log(version);
-  process.exit(0);
-}
+const { command, flags } = parseArgs(process.argv.slice(2));
 
-if (configIdx !== -1 && (!configArg || configArg.startsWith('-'))) {
-  console.error(`\n${err('--config needs a path, e.g. --config ./configs/api.mjs')}\n`);
-  process.exit(1);
-}
+if (flags.help) { printHelp(); process.exit(0); }
+if (flags.version) { console.log(version); process.exit(0); }
 
-switch (command) {
-  case 'run':
-    await runWizard(configPath);
-    closePrompt();
-    break;
-  case 'add':
-    await runAdd(configPath);
-    closePrompt();
-    break;
-  case 'init':
-    runInit(configPath);
-    break;
-  case 'generate':
-    await runGenerate(configPath, { prune: args.includes('--prune') });
-    break;
-  case 'diff':
-    await runDiff(configPath);
-    break;
-  default:
-    console.error(`\n${err(`Unknown command: "${command}"`)}`);
-    printHelp();
-    process.exit(1);
+const configPath = findConfigPath(process.cwd(), flags.config);
+
+try {
+  switch (command) {
+    case 'run':      await runWizard(configPath, flags); break;
+    case 'add':      await runAdd(configPath, flags); break;
+    case 'init':     runInit(configPath, flags); break;
+    case 'diff':     await runDiff(configPath); break;
+    case 'info':     await runInfo(configPath); break;
+    case 'generate':
+      if (flags.watch) await runWatch(configPath, { prune: flags.prune });
+      else await runGenerate(configPath, { prune: flags.prune });
+      break;
+    default:
+      console.error(`\n${err(`Unknown command: "${command}"`)}`);
+      printHelp();
+      process.exit(1);
+  }
+} catch (e) {
+  if (e instanceof CliError) process.exit(1);
+  throw e;
 }
