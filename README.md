@@ -6,6 +6,8 @@ Works with **Next.js** (App Router **and** Pages Router) and standalone **React*
 
 Stop writing boilerplate. Connect your APIs in seconds.
 
+📖 **Documentation:** [English](https://last-code-mgl.github.io/codegen-openapi/) · [Português (BR)](https://last-code-mgl.github.io/codegen-openapi/pt/)
+
 [![npm version](https://img.shields.io/npm/v/codegen-openapi)](https://www.npmjs.com/package/codegen-openapi)
 [![license](https://img.shields.io/npm/l/codegen-openapi)](./LICENSE)
 [![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](./package.json)

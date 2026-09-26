@@ -1,221 +1,189 @@
-# Configuration Reference
+# Configuration
 
-Full reference for all fields in `nextjs-codegen.config.mjs`.
-
----
-
-## File format
-
-The config file must be a `.mjs` (ESM) file that exports an array of config objects:
+The config file (`openapi-gen.config.mjs` by default) is an ES module that exports an **array** of API entries. A single object is also accepted.
 
 ```js
-/** @type {import('nextjs-openapi-codegen').CodegenConfig[]} */
-export default [ ...configs ];
+/** @type {import('codegen-openapi').CodegenConfig[]} */
+export default [
+  {
+    name:            'core',
+    framework:       'nextjs',
+    spec:            'https://api.example.com/api-json',
+    routesOut:       'src/app/api',
+    servicesOut:     'src/services',
+    apiEnvVar:       'API_URL',
+    apiFallback:     'https://api.example.com',
+    stripPathPrefix: '/api',
+    cookieName:      'accessToken',
+    apiClient:    { outputPath: 'src/lib/apiClient.ts', unauthorizedRedirect: '/auth' },
+    fetchBackend: { outputPath: 'src/lib/fetchBackend.ts', timeout: 15000 },
+  },
+];
 ```
 
-A single object (not wrapped in an array) is also accepted.
-
----
+The `@type` comment gives you autocomplete and validation in VS Code. All fields are checked before any file is written.
 
 ## Fields
 
-### `name`
-- **Type:** `string`
-- **Default:** `"default"`
-- **Required:** no
-
-Label used in CLI output to identify this config entry. Useful when managing multiple APIs.
-
-```js
-name: 'payments-api'
-```
-
----
+| Field | Type | Default | Applies to |
+|---|---|---|---|
+| [`spec`](#spec) | `string` | **required** | all |
+| [`name`](#name) | `string` | `'default'` | all |
+| [`framework`](#framework) | `'nextjs' \| 'nextjs-pages' \| 'react'` | `'nextjs'` | all |
+| [`routesOut`](#routesout) | `string` | `'src/app/api'` | Next.js |
+| [`servicesOut`](#servicesout) | `string` | `'src/services'` | all |
+| [`hooksOut`](#hooksout) | `string` | `'src/hooks'` | React |
+| [`hooksMode`](#hooksmode) | `'react-query' \| 'fetch'` | `'react-query'` | React |
+| [`apiEnvVar`](#apienvvar) | `string` | `'API_URL'` | Next.js |
+| [`apiFallback`](#apifallback) | `string` | `''` | Next.js |
+| [`stripPathPrefix`](#strippathprefix) | `string` | `'/api'` | all |
+| [`cookieName`](#cookiename) | `string` | — (auth off) | all |
+| [`apiClientPath`](#apiclientpath) | `string` | relative import | all |
+| [`apiClient`](#apiclient) | `false \| object` | `{}` | all |
+| [`fetchBackend`](#fetchbackend) | `false \| object` | `{}` | Next.js |
 
 ### `spec`
-- **Type:** `string`
-- **Required:** yes
 
-URL or local file path to your OpenAPI / Swagger JSON spec.
+URL or local path (relative to the current directory) of the OpenAPI **JSON** spec.
 
 ```js
-spec: 'https://api.example.com/api-json'  // remote URL
-spec: './openapi.json'                    // local file
+spec: 'https://api.example.com/api-json'
+spec: './openapi.json'
 ```
 
-> YAML specs are not currently supported. Export your spec as JSON before use.
+### `name`
 
----
+Label shown in CLI output. Useful with multiple APIs.
+
+### `framework`
+
+- `'nextjs'` — App Router: `route.ts` handlers, services, `apiClient.ts`, `fetchBackend.ts`
+- `'nextjs-pages'` — Pages Router: `pages/api` handlers, services, `apiClient.ts`, `fetchBackend.ts`
+- `'react'` — services, hooks and `apiClient.ts` (no server proxy)
 
 ### `routesOut`
-- **Type:** `string`
-- **Default:** `"src/app/api"`
 
-Directory where generated Next.js route handler files (`route.ts`) are written.
+Where route handlers are written. Default `'src/app/api'` (for the Pages Router the default is `'pages/api'`; `'src/pages/api'` also works).
 
-The directory is created automatically if it does not exist.
+Services derive the URL they call from this folder:
 
-```js
-routesOut: 'src/app/api'
-```
-
----
+| `routesOut` | Services call |
+|---|---|
+| `src/app/api` or `app/api` | `/api/...` |
+| `src/app/api/core` | `/api/core/...` |
+| `pages/api` or `src/pages/api` | `/api/...` |
+| `src/app/(public)/api` | `/api/...` (route groups are ignored) |
 
 ### `servicesOut`
-- **Type:** `string`
-- **Default:** `"src/services"`
 
-Directory where typed service modules are written. Each OpenAPI tag becomes a subdirectory.
+Where services are written — one folder per OpenAPI tag.
 
-```js
-servicesOut: 'src/services'
-```
+### `hooksOut`
 
----
+Where hooks are written (React only) — one folder per OpenAPI tag.
+
+### `hooksMode`
+
+| | `react-query` | `fetch` |
+|---|---|---|
+| GET | `useQuery` | `useState` + `useEffect` |
+| Mutations | `useMutation` + cache invalidation | `mutate()` function |
+| Caching / dedup / background refetch | ✅ | — |
+| Extra dependency | `@tanstack/react-query` | none |
 
 ### `apiEnvVar`
-- **Type:** `string`
-- **Default:** `"API_URL"`
 
-Name of the `process.env` variable that holds the backend base URL. Used inside generated route handlers.
+Name of the environment variable the route handlers read for the backend base URL:
 
-```js
-apiEnvVar: 'CORE_API_URL'
-```
-
-The generated route handler will contain:
 ```ts
 const API_URL = process.env.CORE_API_URL || '<apiFallback>';
 ```
 
----
+::: warning
+Handlers call `API_URL` + the path **after** `stripPathPrefix`. If your backend serves `/api/users` and you strip `/api`, the env variable must include it: `API_URL=https://api.example.com/api`.
+:::
 
 ### `apiFallback`
-- **Type:** `string`
-- **Default:** `""`
 
-Hardcoded fallback URL used when `apiEnvVar` is not set in the environment. Useful for local development.
-
-```js
-apiFallback: 'https://api.example.com'
-```
-
----
+URL used when the env variable is not set — handy for local development.
 
 ### `stripPathPrefix`
-- **Type:** `string`
-- **Default:** `"/api"`
 
-Removes this prefix from all OpenAPI paths before creating route files.
-
-Prevents double-nesting like `src/app/api/api/users/route.ts`.
+Removed from every spec path before creating files and URLs, to avoid `src/app/api/api/users`. It only matches whole segments: `/api` strips `/api/users` but not `/apikeys`. Set to `''` to disable.
 
 ```js
 stripPathPrefix: '/api'
-// /api/users → /users → src/app/api/users/route.ts
+// /api/users/{id} → /users/{id} → src/app/api/users/[id]/route.ts
 ```
-
-Set to `""` (empty string) to disable stripping.
-
----
 
 ### `cookieName`
-- **Type:** `string`
-- **Default:** `undefined`
 
-Name of the HTTP-only cookie that holds the JWT token.
+Name of the cookie holding the JWT. When set:
 
-- In `apiClient.ts`: reads this cookie from the browser via `js-cookie` and attaches it as `Authorization: Bearer <token>`
-- In `fetchBackend.ts`: reads this cookie server-side via `next/headers` and propagates it to backend requests
+- `apiClient.ts` reads it in the browser and sends `Authorization: Bearer <token>`
+- App Router: `fetchBackend.ts` reads it server-side with `next/headers`
+- Pages Router: each handler reads it from `req.cookies`
 
-```js
-cookieName: 'accessToken'
-```
-
-Omit or set to `undefined` to disable automatic auth propagation entirely.
-
----
+Leave it out to disable automatic auth.
 
 ### `apiClientPath`
-- **Type:** `string`
-- **Default:** relative path to `apiClient.outputPath` (e.g. `'../../lib/apiClient'`)
 
-The import path generated service files use to import the `apiClient` instance. The relative default works without any path alias; set it to use an alias instead.
+Import path services use for the `apiClient`. By default it's a **relative** path to `apiClient.outputPath` (e.g. `'../../lib/apiClient'`), which works without path aliases. Set it to use an alias:
 
 ```js
 apiClientPath: '@/lib/apiClient'
-// → import apiClient from '@/lib/apiClient';
 ```
 
----
-
 ### `apiClient`
-- **Type:** `false | object`
-- **Default:** `{}`
 
-Controls generation of `apiClient.ts` (browser-side Axios instance). Set to `false` to skip.
+Options for the browser client, or `false` to skip generating it.
 
 ```js
 apiClient: {
-  outputPath:           'src/lib/apiClient.ts',  // Output file path
-  cookieName:           'accessToken',            // Overrides global cookieName
-  deviceTracking:       false,                    // Inject device fingerprint headers
-  unauthorizedRedirect: '/auth',                  // Redirect path on 401
+  outputPath: 'src/lib/apiClient.ts',  // file to generate
+  cookieName: 'accessToken',           // overrides the global cookieName
+  deviceTracking: false,               // x-device-* headers on every request
+  unauthorizedRedirect: '/auth',       // where to go on 401
 }
-
-// Skip generation:
-apiClient: false
 ```
 
-**`deviceTracking`** — when `true`, the generated client sends these headers on every request:
-- `x-device-id` (UUID stored in localStorage)
-- `x-device-os`
-- `x-device-browser`
-
----
-
 ### `fetchBackend`
-- **Type:** `false | object`
-- **Default:** `{}`
 
-Controls generation of `fetchBackend.ts` (server-side HTTP helper). Set to `false` to skip.
+Options for the server helper used by the route handlers, or `false` to skip generating it.
 
 ```js
 fetchBackend: {
-  outputPath: 'src/lib/fetchBackend.ts',  // Output file path
-  cookieName: 'accessToken',              // Overrides global cookieName
-  timeout:    15000,                      // Request timeout in milliseconds
+  outputPath: 'src/lib/fetchBackend.ts',
+  cookieName: 'accessToken',  // overrides the global cookieName
+  timeout: 15000,             // ms
 }
-
-// Skip generation:
-fetchBackend: false
 ```
 
----
+Route handlers import it relative to `outputPath`.
 
-## Full example
+## Multiple APIs
+
+Add one entry per API. Give each API its own `routesOut` subfolder so files don't overwrite each other, and set `apiClient` / `fetchBackend` to `false` on the extra entries — they reuse the helpers generated by the first one (`openapi-gen add` does this for you).
 
 ```js
-/** @type {import('nextjs-openapi-codegen').CodegenConfig[]} */
 export default [
   {
-    name:            'core',
-    spec:            'https://api.example.com/api-json',
-    routesOut:       'src/app/api',
-    servicesOut:     'src/services',
-    apiEnvVar:       'CORE_API_URL',
-    apiFallback:     'https://api.example.com',
-    stripPathPrefix: '/api',
-    cookieName:      'accessToken',
-    apiClient: {
-      outputPath:           'src/lib/apiClient.ts',
-      deviceTracking:       false,
-      unauthorizedRedirect: '/auth',
-    },
-    fetchBackend: {
-      outputPath: 'src/lib/fetchBackend.ts',
-      timeout:    15000,
-    },
+    name: 'core',
+    spec: 'https://api.example.com/api-json',
+    routesOut: 'src/app/api/core',
+    servicesOut: 'src/services/core',
+    apiEnvVar: 'CORE_API_URL',
+    cookieName: 'accessToken',
+  },
+  {
+    name: 'payments',
+    spec: 'https://payments.example.com/api-json',
+    routesOut: 'src/app/api/payments',
+    servicesOut: 'src/services/payments',
+    apiEnvVar: 'PAYMENTS_API_URL',
+    cookieName: 'accessToken',
+    apiClient: false,
+    fetchBackend: false,
   },
 ];
 ```

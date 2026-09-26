@@ -41,3 +41,7 @@ coverage/
 ROADMAP.md
 # Test output
 test/.tmp/
+
+# Docs site
+docs/.vitepress/cache/
+docs/.vitepress/dist/
