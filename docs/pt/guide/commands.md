@@ -1,38 +1,44 @@
 # Comandos
 
-Todo comando aceita `--config <caminho>` (padrão: `openapi-gen.config.mjs`). Rodar `openapi-gen` sem comando é o mesmo que `openapi-gen generate`.
-
 | Comando | O que faz |
 |---|---|
-| [`run`](#run) | Assistente interativo — comece por aqui |
-| [`add`](#add) | Adiciona outra API a um config existente |
-| [`generate`](#generate) | Gera todos os arquivos a partir do config (`--prune` remove os obsoletos) |
-| [`diff`](#diff) | Compara a spec com os arquivos em disco, sem escrever nada |
+| [`run`](#run) | Configuração interativa — comece por aqui (English / Português) |
+| [`add`](#add) | Conecta outra API |
+| [`generate`](#generate) | Gera tudo — o comando padrão (`--prune`, `--watch`) |
+| [`diff`](#diff) | O que mudaria, sem escrever nada |
+| [`info`](#info) | O que o seu config significa: pastas, variáveis de ambiente, quantidades |
 | [`init`](#init) | Cria um config inicial comentado |
 
-`--version` mostra a versão instalada e `--help` lista tudo acima.
+Todo comando aceita `--config <caminho>`; por padrão é usado o `openapi-gen.config.{mjs,js,ts,mts}`. `--version` e `--help` funcionam em qualquer lugar.
 
 ## `run`
 
 ```bash
 npx openapi-gen run
+npx openapi-gen run --lang pt
 ```
 
-O assistente olha o seu projeto primeiro — `package.json`, `app/` ou `pages/`, `src/` — e usa o que encontra como padrão, então a maioria das perguntas é só <kbd>Enter</kbd>:
+O assistente faz poucas perguntas, um passo de cada vez:
 
-1. **Framework** — `nextjs`, `nextjs-pages` ou `react`, detectado a partir do projeto (no `react`, também a biblioteca de hooks: `react-query` ou `fetch`)
-2. **Nome da API** — um rótulo exibido na saída do CLI
-3. **Spec OpenAPI** — URL ou caminho local. Ela é carregada na hora: você vê o título da API e o número de operações, ou um erro claro (ex.: *"esta é a página do Swagger UI, use /api-json"*)
-4. **Prefixo a remover** — sugerido a partir da spec (ex.: todos os caminhos começam com `/api`)
-5. **URL do backend** — nome da variável de ambiente e URL de fallback (só Next.js). O fallback já vem com o servidor da spec
-6. **Nome do cookie JWT** — deixe em branco para não usar autenticação
-7. **Gerar agora?**
+1. **Idioma** — English ou Português (o padrão é o idioma do sistema; pule com `--lang en|pt`)
+2. **Framework** — detectado pelo `package.json` e pelas pastas
+3. **Biblioteca de hooks** — só React
+4. **Spec OpenAPI** — carregada na hora: você vê o nome da API e o número de endpoints, ou um erro claro como *"esta é a página do Swagger UI, use /api-json"*
+5. **Nome da API** — sugerido a partir do título da spec
+6. **URL do backend** — a variável de ambiente e um fallback tirado dos `servers` da spec
+7. **Autenticação** — o cookie de login, ou nada
 
-As pastas de saída seguem o layout do projeto (`src/app/api` ou `app/api`, `src/services` ou `services`). No final, o assistente oferece encadear o [`add`](#add). Se o config já existir, pergunta antes de sobrescrever.
+As escolhas são numeradas — digite `1`, `2`… ou pressione <kbd>Enter</kbd> para a sugestão. **Digite `?` em qualquer pergunta** para ver uma explicação daquele passo com exemplos.
 
-::: tip
-As respostas podem vir por pipe, o que ajuda em scripts: `printf 'nextjs\nminha-api\n./openapi.json\n\n\n\n\ny\nn\n' | npx openapi-gen run`
-:::
+Antes de escrever qualquer coisa ele mostra uma **revisão**: o arquivo de config, o que será gerado (rotas, services, hooks e onde) e as variáveis para colocar no seu `.env`. Dá para salvar e gerar, só salvar, ou cancelar. Depois de gerar, ele oferece **instalar os pacotes** que o código gerado precisa e conectar outra API.
+
+Se já existir um config, o `run` oferece adicionar uma API a ele ou começar do zero.
+
+Para scripts e CI, o `--yes` aceita todas as sugestões:
+
+```bash
+npx openapi-gen run --yes --spec ./openapi.json
+```
 
 ## `add`
 
@@ -40,33 +46,27 @@ As respostas podem vir por pipe, o que ajuda em scripts: `printf 'nextjs\nminha-
 npx openapi-gen add
 ```
 
-Adiciona outra API ao config. Pergunta o nome, a spec (validada como no `run`), a autenticação (manter / trocar / `-` para desativar), as pastas de saída e, no Next.js, a variável de ambiente do backend.
-
-- Cada API nova ganha **suas próprias pastas** por padrão (`src/app/api/<nome>`, `src/services/<nome>`), então arquivos de APIs diferentes nunca se sobrescrevem.
-- Reaproveita o `apiClient.ts` / `fetchBackend.ts` gerados pela primeira API.
-- A entrada é **inserida no arquivo como texto** — seus comentários e a formatação são mantidos.
+Pergunta a spec, um nome e a variável da URL do backend, mostra a revisão e adiciona a API ao seu config — **como texto, então seus comentários e a formatação são mantidos**. A nova API ganha pastas próprias (`src/app/api/<nome>`, `src/services/<nome>`) e reaproveita o `auth` e os helpers compartilhados. Aceita `--lang`, `--yes` e `--spec` como o `run`.
 
 ## `generate`
 
 ```bash
 npx openapi-gen generate
 npx openapi-gen generate --prune
+npx openapi-gen generate --watch
 ```
 
-1. **Valida** todas as entradas — inclusive erros de digitação, ex.: `unknown option "routeOut" — did you mean "routesOut"?` Nada é escrito se algo estiver errado.
-2. **Carrega** todas as specs.
-3. **Planeja** todos os arquivos antes. Se duas APIs fossem escrever o mesmo arquivo, para antes de escrever qualquer coisa e lista os arquivos em conflito.
-4. **Escreve** o `apiClient.ts`, o `fetchBackend.ts`, os route handlers, os services e os hooks.
-5. **Avisa sobre arquivos obsoletos** — arquivos gerados cujos endpoints saíram da spec. Com `--prune` eles são apagados (junto com as pastas vazias). Só são considerados arquivos que começam com o cabeçalho `Auto-generated by codegen-openapi`, então os seus arquivos nunca são tocados.
-6. **Confere os pacotes** — se o código gerado importa algo que não está no seu `package.json`, mostra o comando de instalação do seu gerenciador (npm, pnpm, yarn ou bun):
+1. **Valida** o config — inclusive erros de digitação: `unknown option "framwork" — did you mean "framework"?`
+2. **Carrega** todas as specs e aplica `include` / `exclude`.
+3. **Planeja** todos os arquivos. Se duas APIs fossem escrever o mesmo arquivo, para antes de escrever qualquer coisa.
+4. **Escreve** os helpers, as rotas, os services (com um `index.ts` que reexporta todos) e os hooks.
+5. **Avisa sobre arquivos obsoletos** — arquivos gerados cujos endpoints saíram da spec. O `--prune` apaga esses arquivos. Só arquivos que começam com o cabeçalho `Auto-generated by codegen-openapi` são tocados.
+6. Roda os seus comandos de [`afterGenerate`](../configuration#aftergenerate) (ex.: Prettier).
+7. **Confere os pacotes** e mostra o comando para instalar o que faltar (npm, pnpm, yarn ou bun).
 
-```
-! The generated code needs packages that are not in your package.json:
-    pnpm add js-cookie server-only
-    pnpm add -D @types/js-cookie
-```
+O `--watch` gera de novo sempre que o config ou um arquivo local de spec muda; specs remotas são conferidas a cada 10 segundos.
 
-O comando termina com código `1` quando algo falha, então pode rodar no CI.
+O comando termina com código `1` quando há erros, então pode rodar no CI.
 
 ## `diff`
 
@@ -74,20 +74,28 @@ O comando termina com código `1` quando algo falha, então pode rodar no CI.
 npx openapi-gen diff
 ```
 
-Carrega as specs e mostra, sem mexer no disco, quais arquivos seriam **criados** e quais arquivos gerados **não existem mais na spec**:
+Mostra, sem escrever nada, quais arquivos seriam **criados** e quais arquivos gerados **não existem mais na spec**.
+
+## `info`
+
+```bash
+npx openapi-gen info
+```
+
+Explica o que o config significa depois de aplicar os padrões — útil quando algo foi parar num lugar inesperado:
 
 ```
-[my-api] (nextjs) https://api.example.com/api-json
-  + 2 new route file(s) not yet generated:
-    + src/app/api/payments/[id]/route.ts
-    + src/app/api/webhooks/route.ts
-    8 unchanged
-  ✓ 4 service(s) up to date
+[core] nextjs
+  spec            https://api.example.com/api-json
+  endpoints       42
+  path prefix     /api (left out of file names, kept in backend calls)
+  backend URL     API_URL  (fallback: https://api.example.com)
+  routes          18 → src/app/api/
+  services        6 → src/services/
+  auth            cookie accessToken → Authorization: Bearer
 
-- 1 generated file(s) no longer in the spec:
-    - src/app/api/legacy/users/route.ts
-
-Run npx openapi-gen generate to apply changes (add --prune to delete removed files).
+.env
+  API_URL=https://api.example.com
 ```
 
 ## `init`
@@ -96,4 +104,4 @@ Run npx openapi-gen generate to apply changes (add --prune to delete removed fil
 npx openapi-gen init
 ```
 
-Cria um config inicial com todos os campos documentados em comentários, usando as pastas do seu projeto. Não faz nada se o arquivo já existir. Para o primeiro setup, o [`run`](#run) costuma ser mais rápido.
+Cria um config inicial comentado usando as pastas do seu projeto, sem perguntar nada. O `run` costuma ser mais rápido porque preenche os valores para você.

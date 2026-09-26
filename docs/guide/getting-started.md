@@ -34,7 +34,7 @@ npm install axios js-cookie @tanstack/react-query
 ```
 
 ::: tip
-Your spec must be **JSON** (OpenAPI 3.0 or 3.1). YAML and Swagger 2.0 are not supported yet.
+The spec must be OpenAPI 3.0 or 3.1, in JSON — or YAML with the `yaml` package installed in your project. Swagger 2.0 is not supported.
 :::
 
 ## Quick start
@@ -45,7 +45,7 @@ Run the interactive wizard in your project root:
 npx openapi-gen run
 ```
 
-It asks for the framework, the spec URL, the backend URL env variable and the auth cookie, saves `openapi-gen.config.mjs`, and generates everything.
+In English or Portuguese, it detects your framework, loads the spec to check it, suggests every value, shows a review of what will be generated, saves `openapi-gen.config.mjs`, generates everything and offers to install the packages the code needs. Type `?` at any question for help.
 
 Add a script so the whole team regenerates the same way:
 
@@ -61,8 +61,9 @@ Add a script so the whole team regenerates the same way:
 
 ```bash
 npx openapi-gen diff       # what changed in the spec vs. the files on disk
-npx openapi-gen generate   # regenerate all files
+npx openapi-gen generate   # regenerate all files (--prune removes deleted endpoints, --watch keeps running)
 npx openapi-gen add        # connect another API to the same project
+npx openapi-gen info       # where files go and which env variables to set
 ```
 
 ::: warning Generated files are overwritten

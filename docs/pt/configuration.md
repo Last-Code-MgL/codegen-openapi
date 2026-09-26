@@ -1,191 +1,205 @@
 # Configuração
 
-O arquivo de config (`openapi-gen.config.mjs` por padrão) é um módulo ES que exporta um **array** de APIs. Um único objeto também é aceito.
+O `npx openapi-gen run` escreve o config para você. Esta página explica cada opção, caso você queira ajustar.
+
+O arquivo é o `openapi-gen.config.mjs` (`.js`, `.ts` e `.mts` também funcionam — TypeScript precisa do Node.js 22.18+). Um config típico tem poucas linhas:
 
 ```js
-/** @type {import('codegen-openapi').CodegenConfig[]} */
-export default [
-  {
-    name:            'core',
-    framework:       'nextjs',
-    spec:            'https://api.example.com/api-json',
-    routesOut:       'src/app/api',
-    servicesOut:     'src/services',
-    apiEnvVar:       'API_URL',
-    apiFallback:     'https://api.example.com',
-    stripPathPrefix: '/api',
-    cookieName:      'accessToken',
-    apiClient:    { outputPath: 'src/lib/apiClient.ts', unauthorizedRedirect: '/auth' },
-    fetchBackend: { outputPath: 'src/lib/fetchBackend.ts', timeout: 15000 },
+/** @type {import('codegen-openapi').Config} */
+export default {
+  framework: 'nextjs',
+  auth: { cookie: 'accessToken' },
+  apis: {
+    core: {
+      spec: 'https://api.example.com/api-json',
+      baseUrl: { env: 'API_URL', fallback: 'https://api.example.com' },
+    },
   },
-];
+};
 ```
 
-O comentário `@type` dá autocomplete e validação no VS Code. Todos os campos são validados antes de qualquer arquivo ser escrito.
+O comentário `@type` dá autocomplete no VS Code. Num arquivo `.ts`, use o `defineConfig`:
 
-## Campos
+```ts
+import { defineConfig } from 'codegen-openapi';
 
-| Campo | Tipo | Padrão | Vale para |
-|---|---|---|---|
-| [`spec`](#spec) | `string` | **obrigatório** | todos |
-| [`name`](#name) | `string` | `'default'` | todos |
-| [`framework`](#framework) | `'nextjs' \| 'nextjs-pages' \| 'react'` | `'nextjs'` | todos |
-| [`routesOut`](#routesout) | `string` | `'src/app/api'` | Next.js |
-| [`servicesOut`](#servicesout) | `string` | `'src/services'` | todos |
-| [`hooksOut`](#hooksout) | `string` | `'src/hooks'` | React |
-| [`hooksMode`](#hooksmode) | `'react-query' \| 'fetch'` | `'react-query'` | React |
-| [`apiEnvVar`](#apienvvar) | `string` | `'API_URL'` | Next.js |
-| [`apiFallback`](#apifallback) | `string` | `''` | Next.js |
-| [`stripPathPrefix`](#strippathprefix) | `string` | `'/api'` | todos |
-| [`cookieName`](#cookiename) | `string` | — (sem auth) | todos |
-| [`apiClientPath`](#apiclientpath) | `string` | import relativo | todos |
-| [`apiClient`](#apiclient) | `false \| object` | `{}` | todos |
-| [`fetchBackend`](#fetchbackend) | `false \| object` | `{}` | Next.js |
-
-### `spec`
-
-URL ou caminho local (relativo à pasta atual) da spec OpenAPI em **JSON**.
-
-```js
-spec: 'https://api.example.com/api-json'
-spec: './openapi.json'
+export default defineConfig({ apis: { core: { spec: './openapi.json' } } });
 ```
 
-### `name`
+::: tip Veja o que o seu config significa
+`npx openapi-gen info` mostra, para cada API, as pastas, as variáveis de ambiente a definir, o prefixo dos caminhos e quantos arquivos serão gerados.
+:::
 
-Rótulo exibido na saída do CLI. Útil com várias APIs.
+## Opções compartilhadas
+
+| Opção | Padrão | |
+|---|---|---|
+| [`framework`](#framework) | `'nextjs'` | `'nextjs'`, `'nextjs-pages'` ou `'react'` |
+| [`apis`](#apis) | **obrigatório** | uma entrada por backend |
+| [`auth`](#auth) | — (sem auth) | `{ cookie, loginPath }` |
+| [`hooks`](#hooks) | `'react-query'` | só React: `'react-query'` ou `'fetch'` |
+| [`output`](#output) | `src/...` | pastas base |
+| [`afterGenerate`](#aftergenerate) | — | comandos para rodar depois de gerar |
+| [`apiClient`](#apiclient) | — | `{ deviceTracking, importPath }` |
+| [`fetchBackend`](#fetchbackend) | — | `{ timeout }` |
 
 ### `framework`
 
-- `'nextjs'` — App Router: handlers `route.ts`, services, `apiClient.ts`, `fetchBackend.ts`
-- `'nextjs-pages'` — Pages Router: handlers em `pages/api`, services, `apiClient.ts`, `fetchBackend.ts`
-- `'react'` — services, hooks e `apiClient.ts` (sem proxy no servidor)
+- `'nextjs'` — App Router: um `route.ts` por endpoint que faz proxy para o backend, mais services tipados
+- `'nextjs-pages'` — Pages Router: o mesmo, como rotas em `pages/api`
+- `'react'` — services e hooks tipados que chamam o backend direto (sem servidor no meio)
 
-### `routesOut`
+### `apis`
 
-Onde os route handlers são escritos. Padrão `'src/app/api'` (no Pages Router o padrão é `'pages/api'`; `'src/pages/api'` também funciona).
-
-Os services derivam desta pasta a URL que chamam:
-
-| `routesOut` | Services chamam |
-|---|---|
-| `src/app/api` ou `app/api` | `/api/...` |
-| `src/app/api/core` | `/api/core/...` |
-| `pages/api` ou `src/pages/api` | `/api/...` |
-| `src/app/(public)/api` | `/api/...` (route groups são ignorados) |
-
-### `servicesOut`
-
-Onde os services são escritos — uma pasta por tag OpenAPI.
-
-### `hooksOut`
-
-Onde os hooks são escritos (só React) — uma pasta por tag OpenAPI.
-
-### `hooksMode`
-
-| | `react-query` | `fetch` |
-|---|---|---|
-| GET | `useQuery` | `useState` + `useEffect` |
-| Mutações | `useMutation` + invalidação de cache | função `mutate()` |
-| Cache / deduplicação / refetch em segundo plano | ✅ | — |
-| Dependência extra | `@tanstack/react-query` | nenhuma |
-
-### `apiEnvVar`
-
-Nome da variável de ambiente que os route handlers leem para obter a URL base do backend:
-
-```ts
-const API_URL = process.env.CORE_API_URL || '<apiFallback>';
-```
-
-::: warning
-Os handlers chamam `API_URL` + o caminho **depois** do `stripPathPrefix`. Se o seu backend atende em `/api/users` e você remove `/api`, a variável precisa incluí-lo: `API_URL=https://api.example.com/api`.
-:::
-
-### `apiFallback`
-
-URL usada quando a variável de ambiente não está definida — prático em desenvolvimento local.
-
-### `stripPathPrefix`
-
-Removido de todos os caminhos da spec antes de criar arquivos e URLs, para evitar `src/app/api/api/users`. Só casa segmentos inteiros: `/api` remove de `/api/users`, mas não de `/apikeys`. Use `''` para desativar.
+Um mapa de backends, cada um com um nome curto (letras, números, `-`, `_`):
 
 ```js
-stripPathPrefix: '/api'
-// /api/users/{id} → /users/{id} → src/app/api/users/[id]/route.ts
+apis: {
+  core:       { spec: 'https://api.example.com/api-json' },
+  pagamentos: { spec: 'https://pagamentos.example.com/openapi.json' },
+}
 ```
 
-### `cookieName`
+A **primeira** API usa as pastas base (`src/app/api`, `src/services`) e a variável `API_URL`. Cada API seguinte ganha a sua subpasta (`src/app/api/pagamentos`, `src/services/pagamentos`) e uma variável `<NOME>_API_URL`, então adicionar uma API nunca move os arquivos existentes. Veja as [opções de cada API](#opcoes-de-cada-api).
 
-Nome do cookie que guarda o JWT. Quando definido:
-
-- o `apiClient.ts` lê o cookie no navegador e envia `Authorization: Bearer <token>`
-- App Router: o `fetchBackend.ts` lê o cookie no servidor com `next/headers`
-- Pages Router: cada handler lê o cookie de `req.cookies`
-
-Omita para desativar a autenticação automática.
-
-### `apiClientPath`
-
-Caminho de import que os services usam para o `apiClient`. Por padrão é um caminho **relativo** até o `apiClient.outputPath` (ex.: `'../../lib/apiClient'`), que funciona sem alias. Defina para usar um alias:
+### `auth`
 
 ```js
-apiClientPath: '@/lib/apiClient'
+auth: { cookie: 'accessToken', loginPath: '/login' }
+```
+
+O cookie com o JWT do usuário. O código gerado envia o token ao backend como `Authorization: Bearer <token>`:
+
+- **Next.js** — os route handlers leem o cookie no servidor, então ele pode (e deve) ser `httpOnly`
+- **React** — o navegador lê com `js-cookie`, então ele não pode ser `httpOnly`
+
+Quando o backend responde `401`, o navegador é levado para `loginPath` (padrão `/auth`). Omita o `auth` se você cuida da autenticação por conta própria.
+
+### `hooks`
+
+Só React. `'react-query'` (padrão) gera hooks `useQuery` / `useMutation` — requer `@tanstack/react-query`. `'fetch'` gera hooks com `useState` / `useEffect` puros, sem dependência extra.
+
+### `output`
+
+Pastas base. O `run` só escreve as que são diferentes do padrão (ex.: projeto sem `src/`):
+
+```js
+output: {
+  routes: 'src/app/api',    // 'pages/api' no nextjs-pages
+  services: 'src/services',
+  hooks: 'src/hooks',
+  lib: 'src/lib',           // apiClient.ts e fetchBackend.ts
+}
+```
+
+### `afterGenerate`
+
+Comandos executados depois de uma geração bem-sucedida — normalmente um formatador:
+
+```js
+afterGenerate: 'prettier --write src/services src/app/api'
+// ou vários:
+afterGenerate: ['biome format --write src', 'eslint --fix src/services']
 ```
 
 ### `apiClient`
 
-Opções do client do navegador, ou `false` para não gerá-lo.
-
 ```js
 apiClient: {
-  outputPath: 'src/lib/apiClient.ts',  // arquivo a gerar
-  cookieName: 'accessToken',           // sobrescreve o cookieName global
-  deviceTracking: false,               // headers x-device-* em toda requisição
-  unauthorizedRedirect: '/auth',       // para onde ir em caso de 401
+  deviceTracking: false,          // headers x-device-* em toda requisição
+  importPath: '@/lib/apiClient',  // como os services importam (padrão: caminho relativo)
 }
 ```
 
 ### `fetchBackend`
 
-Opções do helper de servidor usado pelos route handlers, ou `false` para não gerá-lo.
+```js
+fetchBackend: { timeout: 15000 }  // ms, nas chamadas dos route handlers ao backend
+```
+
+## Opções de cada API
+
+| Opção | Padrão | |
+|---|---|---|
+| `spec` | **obrigatório** | URL ou arquivo da spec OpenAPI 3 |
+| `baseUrl` | da spec | URL do backend: `{ env, fallback }` ou uma URL |
+| `stripPrefix` | `'auto'` | prefixo deixado fora dos nomes das pastas |
+| `include` / `exclude` | — | escolhe quais endpoints gerar |
+| `output` | veja acima | `{ routes, services, hooks }` desta API |
+
+### `spec`
+
+URL ou caminho local da spec, em JSON — ou YAML, se o pacote [`yaml`](https://www.npmjs.com/package/yaml) estiver instalado no seu projeto. Use o endpoint do JSON, não a página do Swagger UI:
+
+| Backend | URL usual da spec |
+|---|---|
+| NestJS | `/api-json` |
+| FastAPI | `/openapi.json` |
+| Spring (springdoc) | `/v3/api-docs` |
+| ASP.NET | `/swagger/v1/swagger.json` |
+
+### `baseUrl`
+
+Onde o backend está. O código gerado chama **`<baseUrl><caminho da spec>`** — ex.: `https://api.example.com` + `/api/users`.
 
 ```js
-fetchBackend: {
-  outputPath: 'src/lib/fetchBackend.ts',
-  cookieName: 'accessToken',  // sobrescreve o cookieName global
-  timeout: 15000,             // ms
+baseUrl: { env: 'API_URL', fallback: 'https://api.example.com' }
+baseUrl: 'https://api.example.com'   // igual a { fallback: '...' } com o nome de variável padrão
+```
+
+- `env` — a variável de ambiente lida em runtime (Next.js) ou no build (React). Padrão: `API_URL` na primeira API, `<NOME>_API_URL` nas outras; `VITE_API_URL` / `VITE_<NOME>_API_URL` no React.
+- `fallback` — usado quando a variável não está definida. Padrão: o `servers[0].url` da spec, ou o endereço de onde a spec foi baixada.
+
+No React, variáveis que começam com `VITE_` são lidas com `import.meta.env`; as demais, com `process.env`.
+
+### `stripPrefix`
+
+Quando todos os caminhos da spec começam com o mesmo prefixo (ex.: `/api`), ele fica fora dos nomes das pastas: `/api/users` vira `src/app/api/users` em vez de `src/app/api/api/users`. O backend continua sendo chamado com o caminho completo.
+
+`'auto'` (padrão) detecta o prefixo. Use uma string (`'/api/v1'`) para escolher, ou `false` para manter os caminhos completos.
+
+### `include` / `exclude`
+
+Gera só uma parte da API. Cada filtro casa por tag, padrão de caminho (curinga `*`) ou operationId:
+
+```js
+core: {
+  spec: './openapi.json',
+  include: { tags: ['users', 'orders'] },
+  exclude: { paths: ['/api/admin/*'], operations: ['UsersController_debug'] },
 }
 ```
 
-Os route handlers importam o arquivo por caminho relativo ao `outputPath`.
+Um endpoint é gerado quando casa com o `include` (se houver) e não casa com o `exclude`.
 
 ## Várias APIs
 
-Adicione uma entrada por API — o [`openapi-gen add`](./guide/commands#add) faz isso por você. Dê a cada API a sua própria subpasta em `routesOut` / `servicesOut` e defina `apiClient` / `fetchBackend` como `false` nas entradas extras, para reaproveitarem os helpers gerados pela primeira.
+```js
+export default {
+  auth: { cookie: 'accessToken' },
+  apis: {
+    core:       { spec: 'https://api.example.com/api-json' },
+    pagamentos: { spec: 'https://pagamentos.example.com/openapi.json' },
+  },
+};
+```
 
-Se duas entradas fossem escrever o mesmo arquivo, o `generate` para antes de escrever qualquer coisa e lista os arquivos em conflito. Os nomes das entradas precisam ser únicos.
+`core` → `src/app/api`, `src/services`, `API_URL`. `pagamentos` → `src/app/api/pagamentos`, `src/services/pagamentos`, `PAGAMENTOS_API_URL`. Os helpers `apiClient.ts` / `fetchBackend.ts` e o `auth` são compartilhados. O `npx openapi-gen add` adiciona uma API para você, mantendo os seus comentários.
+
+Se duas APIs fossem escrever o mesmo arquivo, o `generate` para antes de escrever qualquer coisa e lista os conflitos — defina `output` em uma delas.
+
+## Formato antigo (lista)
+
+Configs de versões anteriores — um array com um objeto por API — continuam funcionando sem mudanças:
 
 ```js
 export default [
-  {
-    name: 'core',
-    spec: 'https://api.example.com/api-json',
-    routesOut: 'src/app/api/core',
-    servicesOut: 'src/services/core',
-    apiEnvVar: 'CORE_API_URL',
-    cookieName: 'accessToken',
-  },
-  {
-    name: 'payments',
-    spec: 'https://payments.example.com/api-json',
-    routesOut: 'src/app/api/payments',
-    servicesOut: 'src/services/payments',
-    apiEnvVar: 'PAYMENTS_API_URL',
-    cookieName: 'accessToken',
-    apiClient: false,
-    fetchBackend: false,
-  },
+  { name: 'core', spec: '...', routesOut: 'src/app/api', servicesOut: 'src/services',
+    apiEnvVar: 'API_URL', apiFallback: 'https://api.example.com/api', stripPathPrefix: '/api',
+    cookieName: 'accessToken' },
 ];
 ```
+
+Diferenças para o formato atual: o `apiFallback` / a variável de ambiente precisam incluir o prefixo removido (o backend é chamado com o caminho *depois* do `stripPathPrefix`), cada entrada configura as próprias pastas e helpers (`apiClient: false` / `fetchBackend: false` nas extras), os services do React usam URLs relativas, e não há barrel de services. Opções: `name`, `framework`, `spec`, `routesOut`, `servicesOut`, `hooksOut`, `hooksMode`, `apiEnvVar`, `apiFallback`, `stripPathPrefix`, `cookieName`, `apiClientPath`, `apiClient { outputPath, cookieName, deviceTracking, unauthorizedRedirect }`, `fetchBackend { outputPath, cookieName, timeout }`.
+
+Para migrar, rode `npx openapi-gen run`, escolha *Começar do zero* e compare o arquivo gerado com o antigo.

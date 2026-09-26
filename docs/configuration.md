@@ -1,191 +1,205 @@
 # Configuration
 
-The config file (`openapi-gen.config.mjs` by default) is an ES module that exports an **array** of API entries. A single object is also accepted.
+`npx openapi-gen run` writes the config for you. This page explains every option, in case you want to adjust it.
+
+The file is `openapi-gen.config.mjs` (`.js`, `.ts` and `.mts` also work — TypeScript needs Node.js 22.18+). A typical config is only a few lines:
 
 ```js
-/** @type {import('codegen-openapi').CodegenConfig[]} */
-export default [
-  {
-    name:            'core',
-    framework:       'nextjs',
-    spec:            'https://api.example.com/api-json',
-    routesOut:       'src/app/api',
-    servicesOut:     'src/services',
-    apiEnvVar:       'API_URL',
-    apiFallback:     'https://api.example.com',
-    stripPathPrefix: '/api',
-    cookieName:      'accessToken',
-    apiClient:    { outputPath: 'src/lib/apiClient.ts', unauthorizedRedirect: '/auth' },
-    fetchBackend: { outputPath: 'src/lib/fetchBackend.ts', timeout: 15000 },
+/** @type {import('codegen-openapi').Config} */
+export default {
+  framework: 'nextjs',
+  auth: { cookie: 'accessToken' },
+  apis: {
+    core: {
+      spec: 'https://api.example.com/api-json',
+      baseUrl: { env: 'API_URL', fallback: 'https://api.example.com' },
+    },
   },
-];
+};
 ```
 
-The `@type` comment gives you autocomplete and validation in VS Code. All fields are checked before any file is written.
+The `@type` comment gives autocomplete in VS Code. In a `.ts` file, use `defineConfig` instead:
 
-## Fields
+```ts
+import { defineConfig } from 'codegen-openapi';
 
-| Field | Type | Default | Applies to |
-|---|---|---|---|
-| [`spec`](#spec) | `string` | **required** | all |
-| [`name`](#name) | `string` | `'default'` | all |
-| [`framework`](#framework) | `'nextjs' \| 'nextjs-pages' \| 'react'` | `'nextjs'` | all |
-| [`routesOut`](#routesout) | `string` | `'src/app/api'` | Next.js |
-| [`servicesOut`](#servicesout) | `string` | `'src/services'` | all |
-| [`hooksOut`](#hooksout) | `string` | `'src/hooks'` | React |
-| [`hooksMode`](#hooksmode) | `'react-query' \| 'fetch'` | `'react-query'` | React |
-| [`apiEnvVar`](#apienvvar) | `string` | `'API_URL'` | Next.js |
-| [`apiFallback`](#apifallback) | `string` | `''` | Next.js |
-| [`stripPathPrefix`](#strippathprefix) | `string` | `'/api'` | all |
-| [`cookieName`](#cookiename) | `string` | — (auth off) | all |
-| [`apiClientPath`](#apiclientpath) | `string` | relative import | all |
-| [`apiClient`](#apiclient) | `false \| object` | `{}` | all |
-| [`fetchBackend`](#fetchbackend) | `false \| object` | `{}` | Next.js |
-
-### `spec`
-
-URL or local path (relative to the current directory) of the OpenAPI **JSON** spec.
-
-```js
-spec: 'https://api.example.com/api-json'
-spec: './openapi.json'
+export default defineConfig({ apis: { core: { spec: './openapi.json' } } });
 ```
 
-### `name`
+::: tip See what your config resolves to
+`npx openapi-gen info` prints, for each API, the folders, the environment variables to set, the path prefix and how many files will be generated.
+:::
 
-Label shown in CLI output. Useful with multiple APIs.
+## Shared options
+
+| Option | Default | |
+|---|---|---|
+| [`framework`](#framework) | `'nextjs'` | `'nextjs'`, `'nextjs-pages'` or `'react'` |
+| [`apis`](#apis) | **required** | one entry per backend |
+| [`auth`](#auth) | — (no auth) | `{ cookie, loginPath }` |
+| [`hooks`](#hooks) | `'react-query'` | React only: `'react-query'` or `'fetch'` |
+| [`output`](#output) | `src/...` | base folders |
+| [`afterGenerate`](#aftergenerate) | — | commands to run after generating |
+| [`apiClient`](#apiclient) | — | `{ deviceTracking, importPath }` |
+| [`fetchBackend`](#fetchbackend) | — | `{ timeout }` |
 
 ### `framework`
 
-- `'nextjs'` — App Router: `route.ts` handlers, services, `apiClient.ts`, `fetchBackend.ts`
-- `'nextjs-pages'` — Pages Router: `pages/api` handlers, services, `apiClient.ts`, `fetchBackend.ts`
-- `'react'` — services, hooks and `apiClient.ts` (no server proxy)
+- `'nextjs'` — App Router: one `route.ts` per endpoint that proxies to the backend, plus typed services
+- `'nextjs-pages'` — Pages Router: the same, as `pages/api` routes
+- `'react'` — typed services and hooks that call the backend directly (no server in between)
 
-### `routesOut`
+### `apis`
 
-Where route handlers are written. Default `'src/app/api'` (for the Pages Router the default is `'pages/api'`; `'src/pages/api'` also works).
-
-Services derive the URL they call from this folder:
-
-| `routesOut` | Services call |
-|---|---|
-| `src/app/api` or `app/api` | `/api/...` |
-| `src/app/api/core` | `/api/core/...` |
-| `pages/api` or `src/pages/api` | `/api/...` |
-| `src/app/(public)/api` | `/api/...` (route groups are ignored) |
-
-### `servicesOut`
-
-Where services are written — one folder per OpenAPI tag.
-
-### `hooksOut`
-
-Where hooks are written (React only) — one folder per OpenAPI tag.
-
-### `hooksMode`
-
-| | `react-query` | `fetch` |
-|---|---|---|
-| GET | `useQuery` | `useState` + `useEffect` |
-| Mutations | `useMutation` + cache invalidation | `mutate()` function |
-| Caching / dedup / background refetch | ✅ | — |
-| Extra dependency | `@tanstack/react-query` | none |
-
-### `apiEnvVar`
-
-Name of the environment variable the route handlers read for the backend base URL:
-
-```ts
-const API_URL = process.env.CORE_API_URL || '<apiFallback>';
-```
-
-::: warning
-Handlers call `API_URL` + the path **after** `stripPathPrefix`. If your backend serves `/api/users` and you strip `/api`, the env variable must include it: `API_URL=https://api.example.com/api`.
-:::
-
-### `apiFallback`
-
-URL used when the env variable is not set — handy for local development.
-
-### `stripPathPrefix`
-
-Removed from every spec path before creating files and URLs, to avoid `src/app/api/api/users`. It only matches whole segments: `/api` strips `/api/users` but not `/apikeys`. Set to `''` to disable.
+A map of backends, keyed by a short name (letters, numbers, `-`, `_`):
 
 ```js
-stripPathPrefix: '/api'
-// /api/users/{id} → /users/{id} → src/app/api/users/[id]/route.ts
+apis: {
+  core:     { spec: 'https://api.example.com/api-json' },
+  payments: { spec: 'https://payments.example.com/openapi.json' },
+}
 ```
 
-### `cookieName`
+The **first** API uses the base folders (`src/app/api`, `src/services`) and the `API_URL` variable. Every other API gets its own subfolder (`src/app/api/payments`, `src/services/payments`) and a `<NAME>_API_URL` variable, so adding an API never moves existing files. See [API options](#api-options).
 
-Name of the cookie holding the JWT. When set:
-
-- `apiClient.ts` reads it in the browser and sends `Authorization: Bearer <token>`
-- App Router: `fetchBackend.ts` reads it server-side with `next/headers`
-- Pages Router: each handler reads it from `req.cookies`
-
-Leave it out to disable automatic auth.
-
-### `apiClientPath`
-
-Import path services use for the `apiClient`. By default it's a **relative** path to `apiClient.outputPath` (e.g. `'../../lib/apiClient'`), which works without path aliases. Set it to use an alias:
+### `auth`
 
 ```js
-apiClientPath: '@/lib/apiClient'
+auth: { cookie: 'accessToken', loginPath: '/login' }
+```
+
+The cookie holding the user's JWT. The generated code sends it to the backend as `Authorization: Bearer <token>`:
+
+- **Next.js** — the route handlers read the cookie on the server, so it can (and should) be `httpOnly`
+- **React** — the browser reads it with `js-cookie`, so it can't be `httpOnly`
+
+When the backend answers `401`, the browser is sent to `loginPath` (default `/auth`). Leave `auth` out if you handle authentication yourself.
+
+### `hooks`
+
+React only. `'react-query'` (default) generates `useQuery` / `useMutation` hooks — requires `@tanstack/react-query`. `'fetch'` generates plain `useState` / `useEffect` hooks with no extra dependency.
+
+### `output`
+
+Base folders. `run` only writes the ones that differ from the defaults (e.g. a project without `src/`):
+
+```js
+output: {
+  routes: 'src/app/api',    // 'pages/api' for nextjs-pages
+  services: 'src/services',
+  hooks: 'src/hooks',
+  lib: 'src/lib',           // apiClient.ts and fetchBackend.ts
+}
+```
+
+### `afterGenerate`
+
+Commands run after a successful generation — typically a formatter:
+
+```js
+afterGenerate: 'prettier --write src/services src/app/api'
+// or several:
+afterGenerate: ['biome format --write src', 'eslint --fix src/services']
 ```
 
 ### `apiClient`
 
-Options for the browser client, or `false` to skip generating it.
-
 ```js
 apiClient: {
-  outputPath: 'src/lib/apiClient.ts',  // file to generate
-  cookieName: 'accessToken',           // overrides the global cookieName
-  deviceTracking: false,               // x-device-* headers on every request
-  unauthorizedRedirect: '/auth',       // where to go on 401
+  deviceTracking: false,          // x-device-* headers on every request
+  importPath: '@/lib/apiClient',  // how services import it (default: relative path)
 }
 ```
 
 ### `fetchBackend`
 
-Options for the server helper used by the route handlers, or `false` to skip generating it.
+```js
+fetchBackend: { timeout: 15000 }  // ms, for requests from the route handlers to the backend
+```
+
+## API options
+
+| Option | Default | |
+|---|---|---|
+| `spec` | **required** | URL or file of the OpenAPI 3 spec |
+| `baseUrl` | from the spec | backend URL: `{ env, fallback }` or a URL |
+| `stripPrefix` | `'auto'` | prefix left out of file names |
+| `include` / `exclude` | — | pick which endpoints to generate |
+| `output` | see above | `{ routes, services, hooks }` for this API |
+
+### `spec`
+
+URL or local path of the spec, in JSON — or YAML if the [`yaml`](https://www.npmjs.com/package/yaml) package is installed in your project. Use the JSON endpoint, not the Swagger UI page:
+
+| Backend | Usual spec URL |
+|---|---|
+| NestJS | `/api-json` |
+| FastAPI | `/openapi.json` |
+| Spring (springdoc) | `/v3/api-docs` |
+| ASP.NET | `/swagger/v1/swagger.json` |
+
+### `baseUrl`
+
+Where the backend lives. The generated code calls **`<baseUrl><path from the spec>`** — e.g. `https://api.example.com` + `/api/users`.
 
 ```js
-fetchBackend: {
-  outputPath: 'src/lib/fetchBackend.ts',
-  cookieName: 'accessToken',  // overrides the global cookieName
-  timeout: 15000,             // ms
+baseUrl: { env: 'API_URL', fallback: 'https://api.example.com' }
+baseUrl: 'https://api.example.com'   // same as { fallback: '...' } with the default env name
+```
+
+- `env` — the environment variable read at runtime (Next.js) or build time (React). Default: `API_URL` for the first API, `<NAME>_API_URL` for the others; `VITE_API_URL` / `VITE_<NAME>_API_URL` in React.
+- `fallback` — used when the variable isn't set. Default: the spec's `servers[0].url`, or the address the spec was downloaded from.
+
+In React, variables starting with `VITE_` are read with `import.meta.env`; others with `process.env`.
+
+### `stripPrefix`
+
+When every path in your spec starts with the same prefix (e.g. `/api`), it's left out of folder names, so `/api/users` becomes `src/app/api/users` instead of `src/app/api/api/users`. The backend is still called with the full path.
+
+`'auto'` (default) detects the prefix. Set a string (`'/api/v1'`) to choose it, or `false` to keep full paths.
+
+### `include` / `exclude`
+
+Generate only part of an API. Each filter matches by tag, path pattern (`*` wildcard) or operationId:
+
+```js
+core: {
+  spec: './openapi.json',
+  include: { tags: ['users', 'orders'] },
+  exclude: { paths: ['/api/admin/*'], operations: ['UsersController_debug'] },
 }
 ```
 
-Route handlers import it relative to `outputPath`.
+An endpoint is generated when it matches `include` (if set) and doesn't match `exclude`.
 
-## Multiple APIs
+## Several APIs
 
-Add one entry per API — [`openapi-gen add`](./guide/commands#add) does it for you. Give each API its own `routesOut` / `servicesOut` subfolder, and set `apiClient` / `fetchBackend` to `false` on the extra entries so they reuse the helpers generated by the first one.
+```js
+export default {
+  auth: { cookie: 'accessToken' },
+  apis: {
+    core:     { spec: 'https://api.example.com/api-json' },
+    payments: { spec: 'https://payments.example.com/openapi.json' },
+  },
+};
+```
 
-If two entries would write the same file, `generate` stops before writing anything and lists the conflicting files. Entry names must be unique.
+`core` → `src/app/api`, `src/services`, `API_URL`. `payments` → `src/app/api/payments`, `src/services/payments`, `PAYMENTS_API_URL`. The `apiClient.ts` / `fetchBackend.ts` helpers and `auth` are shared. `npx openapi-gen add` appends an API for you, keeping your comments.
+
+If two APIs would write the same file, `generate` stops before writing anything and lists the conflicts — set `output` on one of them.
+
+## Legacy list format
+
+Configs from earlier versions — an array with one object per API — keep working unchanged:
 
 ```js
 export default [
-  {
-    name: 'core',
-    spec: 'https://api.example.com/api-json',
-    routesOut: 'src/app/api/core',
-    servicesOut: 'src/services/core',
-    apiEnvVar: 'CORE_API_URL',
-    cookieName: 'accessToken',
-  },
-  {
-    name: 'payments',
-    spec: 'https://payments.example.com/api-json',
-    routesOut: 'src/app/api/payments',
-    servicesOut: 'src/services/payments',
-    apiEnvVar: 'PAYMENTS_API_URL',
-    cookieName: 'accessToken',
-    apiClient: false,
-    fetchBackend: false,
-  },
+  { name: 'core', spec: '...', routesOut: 'src/app/api', servicesOut: 'src/services',
+    apiEnvVar: 'API_URL', apiFallback: 'https://api.example.com/api', stripPathPrefix: '/api',
+    cookieName: 'accessToken' },
 ];
 ```
+
+Differences from the current format: `apiFallback` / the env variable must include the stripped prefix (the backend is called with the path *after* `stripPathPrefix`), each entry configures its own folders and helpers (`apiClient: false` / `fetchBackend: false` on the extra ones), React services use relative URLs, and there is no services barrel. Options: `name`, `framework`, `spec`, `routesOut`, `servicesOut`, `hooksOut`, `hooksMode`, `apiEnvVar`, `apiFallback`, `stripPathPrefix`, `cookieName`, `apiClientPath`, `apiClient { outputPath, cookieName, deviceTracking, unauthorizedRedirect }`, `fetchBackend { outputPath, cookieName, timeout }`.
+
+To switch, run `npx openapi-gen run`, choose *Start over*, and compare the generated file with your old one.

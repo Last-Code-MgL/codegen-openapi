@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.1.0
+
+### Added
+
+- **A simpler config format**: shared settings plus an `apis` map. Folders, environment variable names, the path prefix to strip (`stripPrefix: 'auto'`) and the backend fallback URL (from the spec's `servers`) are inferred. The first API uses the base folders; each additional API gets `/<name>` subfolders and a `<NAME>_API_URL` variable, so adding an API never moves existing files. Helpers and `auth` are shared, with no more `apiClient: false` on extra entries. The 2.0 list format keeps working.
+- **`baseUrl` follows OpenAPI semantics** in the new format: the backend is called with the full spec path, so the env variable holds just the backend address (`https://api.example.com`), not `…/api`.
+- **React services call the backend directly** in the new format, reading the base URL from an env variable (`import.meta.env.VITE_API_URL` by default).
+- **Interactive setup in English and Portuguese** (`--lang en|pt`, defaults to the system language), with numbered choices, `?` help at every question, the API name suggested from the spec, a review of the config, generated files and `.env` variables before saving, and an offer to install missing packages. `--yes --spec <file>` runs it without questions.
+- `openapi-gen info` shows what the config resolves to: folders, env variables, prefix, counts and a `.env` snippet.
+- `generate --watch` regenerates when the config or a local spec changes, and polls remote specs.
+- `include` / `exclude` filters by tag, path pattern or operationId.
+- `afterGenerate` commands (e.g. Prettier or Biome) run after a successful generation.
+- A barrel `index.ts` re-exporting every service (and its types namespace).
+- YAML specs, parsed with the `yaml` or `js-yaml` package installed in the project (the CLI stays dependency-free).
+- TypeScript config files (`openapi-gen.config.ts`) on Node.js 22.18+, and a `defineConfig` helper.
+
 ## 2.0.0
 
 ### Breaking changes

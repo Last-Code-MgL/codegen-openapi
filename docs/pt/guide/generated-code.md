@@ -69,6 +69,7 @@ Uma pasta por tag OpenAPI (a **primeira** tag de cada operação):
 
 ```
 src/services/
+  index.ts      ← reexporta todos os services: import { usersService } from '@/services'
   users/
     index.ts    ← usersService com um método async por operação
     types.ts    ← schemas + <Metodo>Response / <Metodo>Body / <Metodo>Params
@@ -93,7 +94,7 @@ const usersService = {
 
 **Tipos** suportam objetos, arrays, enums, `$ref` (incluindo `components/parameters`, `requestBodies` e `responses`), `allOf` / `oneOf` / `anyOf` e nulabilidade (`nullable: true` e `type: ['string', 'null']`). Nomes de schema que não são identificadores válidos são ajustados (`Page«User»` → `Page_User_`). Um tipo de operação nunca sobrescreve um schema: se a sua spec tem um schema `LoginResponse`, o tipo de resposta de `login` vira `LoginResponseData`.
 
-Em projetos Next.js os services chamam as rotas geradas (ex.: `/api/users`, derivado do `routesOut`). Em projetos React eles chamam os caminhos do backend diretamente.
+Em projetos Next.js os services chamam as rotas geradas (ex.: `/api/users`). Em projetos React eles chamam o backend direto: `<baseUrl><caminho>`, com a URL base lida de uma variável de ambiente (`import.meta.env.VITE_API_URL` por padrão).
 
 ## Hooks React
 

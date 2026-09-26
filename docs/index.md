@@ -21,5 +21,5 @@ features:
   - title: React hooks
     details: React Query (useQuery / useMutation) or zero-dependency useState / useEffect hooks for every operation.
   - title: Interactive setup
-    details: "`openapi-gen run` asks a few questions, writes the config and generates everything. `diff` shows what changed before you regenerate."
+    details: "`openapi-gen run` guides you in English or Portuguese — type ? for help at any step — shows a review, writes a short config and generates everything."
 ---

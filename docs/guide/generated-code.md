@@ -69,6 +69,7 @@ One folder per OpenAPI tag (the **first** tag of each operation):
 
 ```
 src/services/
+  index.ts      ← re-exports every service: import { usersService } from '@/services'
   users/
     index.ts    ← usersService with one async method per operation
     types.ts    ← schemas + <Method>Response / <Method>Body / <Method>Params
@@ -93,7 +94,7 @@ const usersService = {
 
 **Types** support objects, arrays, enums, `$ref` (including `components/parameters`, `requestBodies` and `responses`), `allOf` / `oneOf` / `anyOf`, and nullability (`nullable: true` and `type: ['string', 'null']`). Schema names that aren't valid identifiers are sanitized (`Page«User»` → `Page_User_`). An operation type never shadows a schema: if your spec has a `LoginResponse` schema, the `login` response type becomes `LoginResponseData`.
 
-In Next.js projects services call your generated routes (e.g. `/api/users`, derived from `routesOut`). In React projects they call the backend paths directly.
+In Next.js projects services call your generated routes (e.g. `/api/users`). In React projects they call the backend directly: `<baseUrl><path>`, with the base URL read from an env variable (`import.meta.env.VITE_API_URL` by default).
 
 ## React hooks
 
