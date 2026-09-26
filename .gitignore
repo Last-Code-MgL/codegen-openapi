@@ -45,3 +45,6 @@ test/.tmp/
 # Docs site
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+
+# Local Claude Code settings
+.claude/
