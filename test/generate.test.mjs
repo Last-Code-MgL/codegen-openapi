@@ -147,6 +147,15 @@ test('hooks: distinct query keys per operation and relative service imports', as
   assert.match(hooks, /from '\.\.\/\.\.\/services\/users'/);
 });
 
+test('CLI: nextjs-pages defaults routesOut to pages/api', () => {
+  const cwd = freshDir('cli-pages-default');
+  writeFileSync(join(cwd, 'openapi-gen.config.mjs'),
+    `export default [{ framework: 'nextjs-pages', spec: ${JSON.stringify(join(here, 'fixtures/edge-cases.json'))} }];\n`);
+  const r = spawnSync(process.execPath, [join(root, 'bin/cli.mjs'), 'generate'], { encoding: 'utf-8', cwd });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.ok(readFileSync(join(cwd, 'pages/api/users.ts'), 'utf-8'));
+});
+
 test('CLI: --config without a command runs generate', () => {
   const r = spawnSync(process.execPath, [join(root, 'bin/cli.mjs'), '--config', './does-not-exist.mjs'], { encoding: 'utf-8', cwd: tmpRoot });
   const out = r.stdout + r.stderr;
