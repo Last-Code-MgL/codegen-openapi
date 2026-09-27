@@ -149,8 +149,16 @@ const httpsAgent =
     ? new https.Agent({ rejectUnauthorized: false })
     : undefined;
 
-/** Client request headers passed on to the backend. */
-const FORWARDED_REQUEST_HEADERS = ['authorization', 'content-type', 'accept', 'accept-language'];
+/**
+ * Client request headers passed on to the backend. x-forwarded-for / x-real-ip keep the real
+ * client IP (Next.js fills x-forwarded-for when a reverse proxy hasn't), so per-IP rate limits
+ * and logs on the backend don't see every user as the Next.js server. The backend must trust
+ * only the proxy hops in front of it (e.g. Express 'trust proxy'), otherwise the IP is spoofable.
+ */
+const FORWARDED_REQUEST_HEADERS = [
+  'authorization', 'content-type', 'accept', 'accept-language',
+  'user-agent', 'x-forwarded-for', 'x-real-ip',
+];
 
 /** Connection-level headers that must not be copied from the backend response. */
 const HOP_BY_HOP_HEADERS = new Set([

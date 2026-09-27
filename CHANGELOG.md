@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **File uploads work from services.** Operations whose body is only `multipart/form-data` are sent with `postForm` / `putForm` / `patchForm` instead of as JSON, so a plain object with files becomes a real multipart request. `format: binary` fields are typed as `Blob` (was `string`), multipart body types also accept a `FormData`, and arrays repeat the key (`photos`, not `photos[]`) as multer expects.
+- **A wrong password no longer reloads the login page.** The generated `apiClient` only removes the cookie and redirects on a `401` of a request that carried a token (an expired session). A `401` without a token is returned to the caller, and there is no redirect when the page is already the login page.
+- **The backend sees the real client IP.** `forwardHeaders` also passes `user-agent`, `x-forwarded-for` and `x-real-ip`, so per-IP rate limits (e.g. login attempts) no longer count every user as the Next.js server. Trust only your proxy hops on the backend (Express `trust proxy`).
+
 ## 2.1.0
 
 ### Added

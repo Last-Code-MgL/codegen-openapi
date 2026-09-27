@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
+import { stringLiteral } from './utils.js';
 
 export interface GenerateApiClientOptions {
   /** Output path relative to cwd @default 'src/lib/apiClient.ts' */
@@ -10,7 +11,9 @@ export interface GenerateApiClientOptions {
    */
   cookieName?: string;
   /**
-   * Redirect path when receiving a 401 Unauthorized status.
+   * Redirect path when an authenticated request gets a 401 Unauthorized status (expired or
+   * revoked session). A 401 on a request sent without a token, e.g. a wrong password on the
+   * login form, is left to the caller.
    * @default '/auth'
    */
   unauthorizedRedirect?: string;
@@ -25,7 +28,7 @@ export interface GenerateApiClientOptions {
  *
  * This client:
  *  - Reads the JWT from the `cookieName` (if configured) and sends it as a Bearer token.
- *  - Redirects to `unauthorizedRedirect` on HTTP 401.
+ *  - Redirects to `unauthorizedRedirect` on HTTP 401 of a request that carried a token.
  *  - Optionally injects device tracking headers.
  */
 export function generateApiClient({
@@ -35,6 +38,7 @@ export function generateApiClient({
   deviceTracking = false,
 }: GenerateApiClientOptions, cwd: string): string {
   const hasCookie = !!cookieName;
+  const redirect = stringLiteral(unauthorizedRedirect);
 
   const cookieImport = hasCookie ? `import Cookies from 'js-cookie';\n` : '';
 
@@ -91,10 +95,13 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    // Only a request that carried a token means the session ended. A 401 without one (e.g. a
+    // wrong password on the login form) goes back to the caller so it can show the error.
+    const hadToken = !!error.config?.headers?.Authorization;
+    if (error.response?.status === 401 && hadToken) {
 ${removeCookie}
-      if (typeof window !== 'undefined') {
-        window.location.href = '${unauthorizedRedirect}';
+      if (typeof window !== 'undefined' && window.location.pathname !== ${redirect}) {
+        window.location.href = ${redirect};
       }
     }
     return Promise.reject(error);

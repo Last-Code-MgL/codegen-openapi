@@ -94,6 +94,12 @@ const usersService = {
 
 **Tipos** suportam objetos, arrays, enums, `$ref` (incluindo `components/parameters`, `requestBodies` e `responses`), `allOf` / `oneOf` / `anyOf` e nulabilidade (`nullable: true` e `type: ['string', 'null']`). Nomes de schema que não são identificadores válidos são ajustados (`Page«User»` → `Page_User_`). Um tipo de operação nunca sobrescreve um schema: se a sua spec tem um schema `LoginResponse`, o tipo de resposta de `login` vira `LoginResponseData`.
 
+**Upload de arquivos**: operações cujo body é só `multipart/form-data` são enviadas com `postForm` / `putForm` / `patchForm`. Passe um objeto comum — campos `format: binary` são tipados como `Blob` (um `File` serve) e arrays repetem a chave (`photos`, não `photos[]`, como o multer e a maioria dos middlewares de upload esperam) — ou um `FormData` montado por você, que é enviado como está.
+
+```ts
+await productsService.create({ name: 'Pizza', photos: [file1, file2] });
+```
+
 Em projetos Next.js os services chamam as rotas geradas (ex.: `/api/users`). Em projetos React eles chamam o backend direto: `<baseUrl><caminho>`, com a URL base lida de uma variável de ambiente (`import.meta.env.VITE_API_URL` por padrão).
 
 ## Hooks React
@@ -147,7 +153,7 @@ Sem dependência extra — `useState` + `useEffect`:
 Uma instância Axios do navegador (padrão `src/lib/apiClient.ts`) usada pelos services:
 
 - com `cookieName`, lê o JWT com `js-cookie` e envia `Authorization: Bearer <token>`
-- em `401`, remove o cookie e redireciona para `unauthorizedRedirect` (padrão `/auth`)
+- em `401` de uma requisição que levava o token, remove o cookie e redireciona para `unauthorizedRedirect` (padrão `/auth`), a não ser que a página já seja essa. Um `401` sem token (ex.: senha errada) fica para quem chamou
 - com `deviceTracking: true`, adiciona os headers `x-device-id`, `x-device-user-agent`, `x-device-browser`, `x-device-os` e `x-device-type`
 
 ::: warning
@@ -159,7 +165,8 @@ O `js-cookie` só consegue ler cookies que **não** são `httpOnly`. No Next.js 
 Um helper só de servidor (padrão `src/lib/fetchBackend.ts`) com a lógica de proxy que os route handlers usam:
 
 - `fetchBackend(url, { method, headers, body })` — chama o backend e devolve uma resposta no estilo do `fetch` que mantém os bytes crus (`json()`, `text()`, `arrayBuffer()`, `headers.getSetCookie()`)
-- `forwardHeaders(request)` — os headers do cliente repassados ao backend, mais o cookie JWT como Bearer token quando `cookieName` está definido (via `next/headers` no App Router, `req.cookies` no Pages Router)
+- `forwardHeaders(request)` — os headers do cliente repassados ao backend (`authorization`, `content-type`, `accept`, `accept-language`, `user-agent`, `x-forwarded-for`, `x-real-ip`), mais o cookie JWT como Bearer token quando `cookieName` está definido (via `next/headers` no App Router, `req.cookies` no Pages Router)
+  - `x-forwarded-for` mantém o IP real do cliente (o Next.js preenche quando nenhum proxy reverso o fez), para que rate limit por IP e logs do backend não vejam todo usuário como o servidor Next.js. Configure o backend para confiar só nos proxies à frente dele (`trust proxy` do Express) e coloque o Next.js atrás de um proxy reverso que defina o header — senão o cliente poderia mandar o próprio valor.
 - `readBody(request)` — o body recebido, sem alteração
 - `toResponse(response)` (App Router) / `sendResponse(res, response)` (Pages Router) — devolve a resposta do backend com status, headers e `Set-Cookie`
 - timeout via `fetchBackend.timeout` (padrão 15s)

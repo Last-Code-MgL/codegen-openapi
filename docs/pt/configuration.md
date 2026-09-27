@@ -73,7 +73,7 @@ O cookie com o JWT do usuário. O código gerado envia o token ao backend como `
 - **Next.js** — os route handlers leem o cookie no servidor, então ele pode (e deve) ser `httpOnly`
 - **React** — o navegador lê com `js-cookie`, então ele não pode ser `httpOnly`
 
-Quando o backend responde `401`, o navegador é levado para `loginPath` (padrão `/auth`). Omita o `auth` se você cuida da autenticação por conta própria.
+Quando uma requisição que levava o token recebe `401` (sessão expirada ou revogada), o cookie é removido e o navegador é levado para `loginPath` (padrão `/auth`). Um `401` numa requisição sem token — senha errada no formulário de login, por exemplo — volta para o seu código mostrar o erro. Omita o `auth` se você cuida da autenticação por conta própria.
 
 ### `hooks`
 

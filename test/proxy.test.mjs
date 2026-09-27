@@ -42,6 +42,9 @@ before(async () => {
         method: req.method,
         url: req.url,
         authorization: req.headers.authorization ?? null,
+        forwardedFor: req.headers['x-forwarded-for'] ?? null,
+        realIp: req.headers['x-real-ip'] ?? null,
+        userAgent: req.headers['user-agent'] ?? null,
         contentType: req.headers['content-type'] ?? null,
         bodyLength: body.length,
         body: body.toString('utf-8'),
@@ -100,6 +103,15 @@ test('App Router: JSON, query, Set-Cookie, auth cookie, raw bodies, binary, 204 
   assert.equal(json.authorization, 'Bearer jwt-from-cookie');
   assert.deepEqual(res.headers.getSetCookie(), ['session=abc; HttpOnly', 'theme=dark']);
   assert.equal(res.headers.get('x-backend'), 'yes');
+
+  // The client IP and user agent reach the backend (per-IP rate limits, logs)
+  res = await route.GET(new Request('http://app/api/users/1', {
+    headers: { 'x-forwarded-for': '203.0.113.7, 10.0.0.2', 'x-real-ip': '203.0.113.7', 'user-agent': 'Browser/1.0' },
+  }), ctx('1'));
+  json = await res.json();
+  assert.equal(json.forwardedFor, '203.0.113.7, 10.0.0.2');
+  assert.equal(json.realIp, '203.0.113.7');
+  assert.equal(json.userAgent, 'Browser/1.0');
 
   // An explicit Authorization header wins over the cookie; the raw body is forwarded
   res = await route.PATCH(new Request('http://app/api/users/1', {
@@ -168,8 +180,13 @@ test('Pages Router: JSON, query, Set-Cookie, cookie auth, raw bodies, binary, 20
   assert.deepEqual(config, { api: { bodyParser: false } });
 
   let res = pagesRes();
-  await handler(pagesReq({ url: '/api/users/7?x=1', query: { userId: '7', x: '1' }, cookies: { token: 'jwt' } }), res);
+  await handler(pagesReq({
+    url: '/api/users/7?x=1', query: { userId: '7', x: '1' }, cookies: { token: 'jwt' },
+    headers: { 'x-forwarded-for': '203.0.113.7', 'user-agent': 'Browser/1.0' },
+  }), res);
   let json = JSON.parse(res.body.toString());
+  assert.equal(json.forwardedFor, '203.0.113.7');
+  assert.equal(json.userAgent, 'Browser/1.0');
   assert.equal(json.url, '/users/7?x=1');
   assert.equal(json.authorization, 'Bearer jwt');
   assert.deepEqual(res.headers['set-cookie'], ['session=abc; HttpOnly', 'theme=dark']);

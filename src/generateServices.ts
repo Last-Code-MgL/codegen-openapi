@@ -151,7 +151,8 @@ function schemaToTs(schema: any, spec: any, indent = 0, visited = new Set<string
   }
 
   switch (type) {
-    case 'string': return `string${nullable}`;
+    // format: binary is a file (multipart upload field) — File extends Blob
+    case 'string': return schema.format === 'binary' ? `Blob${nullable}` : `string${nullable}`;
     case 'number':
     case 'integer': return `number${nullable}`;
     case 'boolean': return `boolean${nullable}`;
@@ -160,6 +161,15 @@ function schemaToTs(schema: any, spec: any, indent = 0, visited = new Set<string
 }
 
 // ─── Extract schemas grouped by operation ─────────────────────────────────────
+
+/**
+ * True when the body is sent as multipart/form-data: the operation accepts it and has no JSON
+ * alternative (getSchemasForOp prefers JSON when both exist).
+ */
+export function isMultipartBody(op: any): boolean {
+  const content = op?._raw?.requestBody?.content ?? {};
+  return !content['application/json'] && !!content['multipart/form-data'];
+}
 
 function getSchemasForOp(op: any) {
   const raw = op._raw;
@@ -239,7 +249,9 @@ function renderTypesFile({ operations, spec }: any) {
     lines.push(tsBlock(aliasResponse, resTs));
 
     if (aliasBody) {
-      const bodyTs = reqSchema ? schemaToTs(reqSchema, spec) : 'unknown';
+      let bodyTs = reqSchema ? schemaToTs(reqSchema, spec) : 'unknown';
+      // Multipart bodies also accept a ready-made FormData (e.g. built from a <form>)
+      if (isMultipartBody(op)) bodyTs += ' | FormData';
       lines.push(`/** ${op.method} ${op.path} — payload */`);
       lines.push(tsBlock(aliasBody, bodyTs));
     }
@@ -334,9 +346,16 @@ function renderMethod(op: any, tree: PathTreeNode, urlBase: string, withBaseUrl 
   if (aliasBody) args.push(`body: ${aliasBody}`);
   if (aliasParams) args.push(`params: ${aliasParams} = {} as ${aliasParams}`);
 
+  // Multipart: postForm/putForm/patchForm turn a plain object into FormData (a FormData is sent
+  // as-is). indexes: null repeats the key for arrays (photos=a, photos=b), which is what upload
+  // middlewares like multer expect — axios' default would send photos[]
+  const multipart = hasBody && isMultipartBody(op) && ['POST', 'PUT', 'PATCH'].includes(method);
+  const axiosMethod = multipart ? `${method.toLowerCase()}Form` : method.toLowerCase();
+
   // Axios signatures: get/delete(url, config) — post/put/patch(url, data, config)
   const config: string[] = [];
   if (aliasParams) config.push('params');
+  if (multipart) config.push('formSerializer: { indexes: null }');
   const callArgs = [urlStr];
   if (method === 'GET' || method === 'DELETE') {
     if (hasBody) config.push('data: body');
@@ -349,7 +368,7 @@ function renderMethod(op: any, tree: PathTreeNode, urlBase: string, withBaseUrl 
   const comment = summary ? jsDoc(summary, '  ') : '';
 
   return `${comment}  async ${methodName}(${args.join(', ')}): Promise<${aliasResponse}> {
-    const { data } = await apiClient.${method.toLowerCase()}(${callArgs.join(', ')});
+    const { data } = await apiClient.${axiosMethod}(${callArgs.join(', ')});
     return data;
   },`;
 }
